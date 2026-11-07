@@ -51,6 +51,7 @@ function member(id) {
   // Add the collection to existing member records without resetting their progress.
   if (!Array.isArray(db.members[id].badges)) db.members[id].badges = [];
   if (!Array.isArray(db.members[id].achievements)) db.members[id].achievements = [];
+  if (!Array.isArray(db.members[id].achievementRewardsClaimed)) db.members[id].achievementRewardsClaimed = [];
   return db.members[id];
 }
 const RANKS = [
@@ -108,6 +109,44 @@ function updateAchievements(m) {
   }
   return newlyUnlocked;
 }
+// One-time coin bonuses for newly unlocked achievements.
+// These bonuses increase the spendable balance but do not count toward
+// lifetimeCoinsEarned, preventing reward bonuses from inflating coin milestones.
+const ACHIEVEMENT_REWARDS = {
+  "First Steps": 50,
+  "Loyal Soul": 100,
+  "Devoted Member": 200,
+  "Olympian": 400,
+  "Legendary": 750,
+  "Eternal Legend": 1500,
+  "Wealth of Olympus": 250,
+  "Treasury Keeper": 750
+};
+function awardAchievementRewards(userId, achievementNames) {
+  if (!achievementNames || !achievementNames.length) return [];
+  const m = member(userId);
+  const awarded = [];
+  for (const name of achievementNames) {
+    const amount = ACHIEVEMENT_REWARDS[name] || 0;
+    if (!amount || m.achievementRewardsClaimed.includes(name)) continue;
+    m.achievementRewardsClaimed.push(name);
+    m.coins += amount;
+    db.transactions.unshift({
+      userId,
+      coins: amount,
+      reputation: 0,
+      reason: `Achievement reward: ${name}`,
+      actorId: "OLYMPUS_LEGACY_SYSTEM",
+      at: new Date().toISOString()
+    });
+    awarded.push({ name, amount });
+  }
+  if (awarded.length) {
+    db.transactions = db.transactions.slice(0, 5000);
+    saveDB();
+  }
+  return awarded;
+}
 const ACHIEVEMENT_CHANNEL_ID = "1568652450917916794";
 async function announceAchievements(userId, achievementNames) {
   if (!achievementNames || !achievementNames.length) return;
@@ -134,7 +173,9 @@ async function announceAchievements(userId, achievementNames) {
       .setDescription(`Congratulations <@${userId}>!
 
 You've unlocked **${name}**.
-${descriptions[name] || "A new achievement has been added to your Olympus Legacy."}`)
+${descriptions[name] || "A new achievement has been added to your Olympus Legacy."}
+
+🎁 **Achievement reward:** ${ACHIEVEMENT_REWARDS[name] || 0} Olympus Coins` )
       .setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY | Recognition earned, never purchased." })
       .setTimestamp());
     for (const embed of embeds) await channel.send({ embeds: [embed] });
@@ -148,7 +189,10 @@ function logTransaction(userId, coins, reputation, reason, actorId) {
   m.reputation = Math.max(0, m.reputation + reputation);
   if (coins > 0) m.lifetimeCoinsEarned = (m.lifetimeCoinsEarned || 0) + coins;
   const newlyUnlocked = updateAchievements(m);
-  if (newlyUnlocked.length) void announceAchievements(userId, newlyUnlocked);
+  if (newlyUnlocked.length) {
+    awardAchievementRewards(userId, newlyUnlocked);
+    void announceAchievements(userId, newlyUnlocked);
+  }
   db.transactions.unshift({ userId, coins, reputation, reason, actorId, at: new Date().toISOString() });
   db.transactions = db.transactions.slice(0, 5000);
   saveDB();
@@ -182,7 +226,10 @@ const server = http.createServer((req, res) => {
         const m = member(String(attendee.userId));
         m.attended += 1;
         const newlyUnlocked = updateAchievements(m);
-        await announceAchievements(String(attendee.userId), newlyUnlocked);
+        if (newlyUnlocked.length) {
+          awardAchievementRewards(String(attendee.userId), newlyUnlocked);
+          await announceAchievements(String(attendee.userId), newlyUnlocked);
+        }
         await syncRankRole(guildId, String(attendee.userId));
       }
       db.events[eventId] = { eventName, eventType, guildId, confirmedBy, awarded: unique.length, rewards: amount, at: new Date().toISOString() };
