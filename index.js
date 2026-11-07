@@ -216,14 +216,6 @@ const SHOP_ITEMS = [
     repeatable: true
   },
   {
-    id: "vip_200_gem_pass",
-    name: "200 Gem VIP Pass",
-    cost: 5000,
-    description: "One VIP pass for a 200 Gem party. The team will contact you to arrange redemption.",
-    delivery: "manual",
-    repeatable: true
-  },
-  {
     id: "premium_title",
     name: "Premium Title",
     cost: 1500,
@@ -239,6 +231,14 @@ const SHOP_ITEMS = [
     delivery: "role",
     roleEnv: "SHOP_PATRON_ROLE_ID",
     repeatable: false
+  },
+  {
+    id: "vip_200_gem_pass",
+    name: "200 Gem VIP Pass",
+    cost: 5000,
+    description: "One VIP pass for a 200 Gem party. The team will contact you to arrange redemption.",
+    delivery: "manual",
+    repeatable: true
   }
 ];
 
