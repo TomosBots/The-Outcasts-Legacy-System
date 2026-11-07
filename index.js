@@ -45,21 +45,61 @@ function saveDB() {
   fs.renameSync(tmp, DB_FILE);
 }
 function member(id) {
-  if (!db.members[id]) db.members[id] = { coins: 0, reputation: 0, achievements: [], attended: 0 };
+  if (!db.members[id]) db.members[id] = { coins: 0, reputation: 0, achievements: [], attended: 0, highestRankIndex: 0, lifetimeCoinsEarned: 0 };
   return db.members[id];
 }
-function rank(rep) {
-  if (rep >= 2000) return "⚡ Eternal Legend";
-  if (rep >= 1000) return "👑 Demigod";
-  if (rep >= 500) return "⚔️ Champion";
-  if (rep >= 250) return "🥇 Olympian";
-  if (rep >= 100) return "🥈 Faithful";
-  return "🥉 Mortal";
+const RANKS = [
+  { name: "Mortal", threshold: 0, roleId: "1568649500787085362", display: "🥉 Mortal" },
+  { name: "Faithful", threshold: 250, roleId: "1568649593539919993", display: "🥈 Faithful" },
+  { name: "Olympian", threshold: 750, roleId: "1568649665052807398", display: "🥇 Olympian" },
+  { name: "Champion", threshold: 1500, roleId: "1568649722166640740", display: "⚔️ Champion" },
+  { name: "Demigod", threshold: 3000, roleId: "1568649794413527100", display: "👑 Demigod" },
+  { name: "Eternal Legend", threshold: 5000, roleId: "1568649946830348359", display: "⚡ Eternal Legend" }
+];
+function rankIndex(rep) {
+  let index = 0;
+  for (let i = 0; i < RANKS.length; i++) if (rep >= RANKS[i].threshold) index = i;
+  return index;
+}
+function rank(rep) { return RANKS[rankIndex(rep)].display; }
+async function syncRankRole(guildId, userId) {
+  try {
+    const guild = await client.guilds.fetch(guildId);
+    const guildMember = await guild.members.fetch(userId);
+    const m = member(userId);
+    const earnedIndex = rankIndex(m.reputation);
+    const previousIndex = Number.isInteger(m.highestRankIndex) ? m.highestRankIndex : 0;
+    const targetIndex = Math.max(previousIndex, earnedIndex);
+    m.highestRankIndex = targetIndex;
+    const targetRoleId = RANKS[targetIndex].roleId;
+    const oldRankRoleIds = RANKS.filter(r => r.roleId !== targetRoleId).map(r => r.roleId);
+    const removeIds = oldRankRoleIds.filter(id => guildMember.roles.cache.has(id));
+    if (removeIds.length) await guildMember.roles.remove(removeIds, "Olympus Legacy rank progression");
+    if (!guildMember.roles.cache.has(targetRoleId)) await guildMember.roles.add(targetRoleId, "Olympus Legacy rank progression");
+    saveDB();
+    return RANKS[targetIndex].name;
+  } catch (err) {
+    console.error(`[Olympus Legacy] Could not sync rank role for ${userId} in ${guildId}:`, err.message);
+    return null;
+  }
+}
+function updateAchievements(m) {
+  const earned = [
+    [m.attended >= 1, "First Steps"],
+    [m.attended >= 5, "Loyal Soul"],
+    [m.attended >= 25, "Olympian"],
+    [m.attended >= 50, "Legendary"],
+    [m.attended >= 100, "Eternal Legend"],
+    [(m.lifetimeCoinsEarned || 0) >= 1000, "Wealth of Olympus"]
+  ];
+  for (const [condition, name] of earned) if (condition && !m.achievements.includes(name)) m.achievements.push(name);
 }
 function logTransaction(userId, coins, reputation, reason, actorId) {
   const m = member(userId);
   m.coins = Math.max(0, m.coins + coins);
   m.reputation = Math.max(0, m.reputation + reputation);
+  if (coins > 0) m.lifetimeCoinsEarned = (m.lifetimeCoinsEarned || 0) + coins;
+  updateAchievements(m);
   db.transactions.unshift({ userId, coins, reputation, reason, actorId, at: new Date().toISOString() });
   db.transactions = db.transactions.slice(0, 5000);
   saveDB();
@@ -78,7 +118,7 @@ const server = http.createServer((req, res) => {
   if (req.headers.authorization !== `Bearer ${API_KEY}`) return json(res, 401, { error: "Unauthorized" });
   let raw = "";
   req.on("data", chunk => { raw += chunk; if (raw.length > 1_000_000) req.destroy(); });
-  req.on("end", () => {
+  req.on("end", async () => {
     try {
       const body = JSON.parse(raw || "{}");
       const { eventId, guildId, eventName, eventType, hostId, coHostId, confirmedBy, attendees } = body;
@@ -92,10 +132,8 @@ const server = http.createServer((req, res) => {
         logTransaction(String(attendee.userId), amount.coins, amount.reputation, `Attendance: ${eventName || eventType}`, confirmedBy);
         const m = member(String(attendee.userId));
         m.attended += 1;
-        if (m.attended >= 5 && !m.achievements.includes("Loyal Soul")) m.achievements.push("Loyal Soul");
-        if (m.attended >= 25 && !m.achievements.includes("Olympian")) m.achievements.push("Olympian");
-        if (m.attended >= 50 && !m.achievements.includes("Legendary")) m.achievements.push("Legendary");
-        if (m.attended >= 100 && !m.achievements.includes("Eternal Legend")) m.achievements.push("Eternal Legend");
+        updateAchievements(m);
+        await syncRankRole(guildId, String(attendee.userId));
       }
       db.events[eventId] = { eventName, eventType, guildId, confirmedBy, awarded: unique.length, rewards: amount, at: new Date().toISOString() };
       saveDB();
@@ -149,7 +187,7 @@ client.on("interactionCreate", async i => {
     }
     if (i.commandName === "reputation") {
       const u = i.options.getUser("member") || i.user, m = member(u.id);
-      return i.reply({ embeds: [new EmbedBuilder().setColor(0xC9A646).setTitle(`⚔️ ${u.username}'S LEGACY`).setDescription(`**Rank:** ${rank(m.reputation)}\n**Reputation:** ${m.reputation.toLocaleString()}\n**Parties attended:** ${m.attended}\n**Next rank:** ${m.reputation < 100 ? 100 : m.reputation < 250 ? 250 : m.reputation < 500 ? 500 : m.reputation < 1000 ? 1000 : m.reputation < 2000 ? 2000 : "Maximum rank"}`).setThumbnail(u.displayAvatarURL()).setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY" })], ephemeral: true });
+      return i.reply({ embeds: [new EmbedBuilder().setColor(0xC9A646).setTitle(`⚔️ ${u.username}'S LEGACY`).setDescription(`**Rank:** ${rank(m.reputation)}\n**Reputation:** ${m.reputation.toLocaleString()}\n**Parties attended:** ${m.attended}\n**Next rank:** ${m.reputation < 250 ? 250 : m.reputation < 750 ? 750 : m.reputation < 1500 ? 1500 : m.reputation < 3000 ? 3000 : m.reputation < 5000 ? 5000 : "Maximum rank"}`).setThumbnail(u.displayAvatarURL()).setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY" })], ephemeral: true });
     }
     if (i.commandName === "shop") {
       const list = db.rewards.length ? db.rewards.map(r => `**${r.name}** — ${r.cost} coins\n${r.description}`).join("\n\n") : "The Olympus shop is being prepared. New rewards will be announced soon.";
@@ -169,6 +207,7 @@ client.on("interactionCreate", async i => {
       const u = i.options.getUser("member"), c = i.options.getInteger("coins"), r = i.options.getInteger("reputation"), reason = i.options.getString("reason");
       const sign = i.commandName === "coins-add" ? 1 : -1;
       logTransaction(u.id, c*sign, r*sign, reason, i.user.id);
+      await syncRankRole(i.guildId || GUILD_ID, u.id);
       return i.reply({ content: `🏛️ Updated <@${u.id}>: ${c*sign} coins and ${r*sign} reputation. Reason: ${reason}`, ephemeral: true });
     }
     if (i.commandName === "legacy-stats") {
