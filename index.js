@@ -87,19 +87,63 @@ function updateAchievements(m) {
   const earned = [
     [m.attended >= 1, "First Steps"],
     [m.attended >= 5, "Loyal Soul"],
+    [m.attended >= 10, "Devoted Member"],
     [m.attended >= 25, "Olympian"],
     [m.attended >= 50, "Legendary"],
     [m.attended >= 100, "Eternal Legend"],
-    [(m.lifetimeCoinsEarned || 0) >= 1000, "Wealth of Olympus"]
+    [(m.lifetimeCoinsEarned || 0) >= 1000, "Wealth of Olympus"],
+    [(m.lifetimeCoinsEarned || 0) >= 5000, "Treasury Keeper"]
   ];
-  for (const [condition, name] of earned) if (condition && !m.achievements.includes(name)) m.achievements.push(name);
+  const newlyUnlocked = [];
+  for (const [condition, name] of earned) {
+    if (condition && !m.achievements.includes(name)) {
+      m.achievements.push(name);
+      newlyUnlocked.push(name);
+    }
+  }
+  return newlyUnlocked;
+}
+const ACHIEVEMENT_CHANNEL_ID = "1568652450917916794";
+async function announceAchievements(userId, achievementNames) {
+  if (!achievementNames || !achievementNames.length) return;
+  try {
+    const channel = await client.channels.fetch(ACHIEVEMENT_CHANNEL_ID);
+    if (!channel || !channel.isTextBased()) {
+      console.error(`[Olympus Legacy] Achievement channel ${ACHIEVEMENT_CHANNEL_ID} is unavailable or not text-based.`);
+      return;
+    }
+    const memberUser = await client.users.fetch(userId);
+    const descriptions = {
+      "First Steps": "You've attended your first party and begun your Olympus journey.",
+      "Loyal Soul": "Five parties attended. Your loyalty is becoming known throughout Olympus.",
+      "Devoted Member": "Ten parties attended. Your dedication to The Outcasts shines.",
+      "Olympian": "Twenty-five parties attended. You are among Olympus's devoted.",
+      "Legendary": "Fifty parties attended. Your name is becoming legendary.",
+      "Eternal Legend": "One hundred parties attended. Your legacy will not be forgotten.",
+      "Wealth of Olympus": "You've earned 1,000 Olympus Coins over your journey.",
+      "Treasury Keeper": "You've earned 5,000 Olympus Coins over your journey."
+    };
+    const embeds = achievementNames.map(name => new EmbedBuilder()
+      .setColor(0xC9A646)
+      .setTitle("🏛️ A NEW LEGEND IS RISING!")
+      .setDescription(`Congratulations <@${userId}>!
+
+You've unlocked **${name}**.
+${descriptions[name] || "A new achievement has been added to your Olympus Legacy."}`)
+      .setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY | Recognition earned, never purchased." })
+      .setTimestamp());
+    for (const embed of embeds) await channel.send({ embeds: [embed] });
+  } catch (err) {
+    console.error(`[Olympus Legacy] Could not announce achievement for ${userId}:`, err.message);
+  }
 }
 function logTransaction(userId, coins, reputation, reason, actorId) {
   const m = member(userId);
   m.coins = Math.max(0, m.coins + coins);
   m.reputation = Math.max(0, m.reputation + reputation);
   if (coins > 0) m.lifetimeCoinsEarned = (m.lifetimeCoinsEarned || 0) + coins;
-  updateAchievements(m);
+  const newlyUnlocked = updateAchievements(m);
+  if (newlyUnlocked.length) void announceAchievements(userId, newlyUnlocked);
   db.transactions.unshift({ userId, coins, reputation, reason, actorId, at: new Date().toISOString() });
   db.transactions = db.transactions.slice(0, 5000);
   saveDB();
@@ -132,7 +176,8 @@ const server = http.createServer((req, res) => {
         logTransaction(String(attendee.userId), amount.coins, amount.reputation, `Attendance: ${eventName || eventType}`, confirmedBy);
         const m = member(String(attendee.userId));
         m.attended += 1;
-        updateAchievements(m);
+        const newlyUnlocked = updateAchievements(m);
+        await announceAchievements(String(attendee.userId), newlyUnlocked);
         await syncRankRole(guildId, String(attendee.userId));
       }
       db.events[eventId] = { eventName, eventType, guildId, confirmedBy, awarded: unique.length, rewards: amount, at: new Date().toISOString() };
