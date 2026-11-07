@@ -169,7 +169,8 @@ function getHallRankings() {
   return {
     reputation: [...entries].sort((a, b) => (b[1].reputation || 0) - (a[1].reputation || 0)).slice(0, 10),
     attendance: [...entries].sort((a, b) => (b[1].attended || 0) - (a[1].attended || 0)).slice(0, 10),
-    lifetimeCoins: [...entries].sort((a, b) => (b[1].lifetimeCoinsEarned || 0) - (a[1].lifetimeCoinsEarned || 0)).slice(0, 10)
+    lifetimeCoins: [...entries].sort((a, b) => (b[1].lifetimeCoinsEarned || 0) - (a[1].lifetimeCoinsEarned || 0)).slice(0, 10),
+    currentTreasury: [...entries].sort((a, b) => (b[1].coins || 0) - (a[1].coins || 0)).slice(0, 10)
   };
 }
 
@@ -182,7 +183,8 @@ function hallOfLegendsEmbed() {
     .addFields(
       { name: "⚔️ Top Reputation", value: leaderboardLines(rankings.reputation, m => m.reputation || 0), inline: false },
       { name: "🎉 Most Parties Attended", value: leaderboardLines(rankings.attendance, m => m.attended || 0), inline: false },
-      { name: "💰 Lifetime Coins Earned", value: leaderboardLines(rankings.lifetimeCoins, m => m.lifetimeCoinsEarned || 0), inline: false }
+      { name: "💰 Lifetime Coins Earned", value: leaderboardLines(rankings.lifetimeCoins, m => m.lifetimeCoinsEarned || 0), inline: false },
+      { name: "🏦 Current Olympus Treasury", value: leaderboardLines(rankings.currentTreasury, m => m.coins || 0), inline: false }
     )
     .setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY | Honour is earned." })
     .setTimestamp();
@@ -192,7 +194,8 @@ async function announceHallOfFameEntries(channel, rankings) {
   const categories = [
     ["reputation", "⚔️ Top Reputation"],
     ["attendance", "🎉 Most Parties Attended"],
-    ["lifetimeCoins", "💰 Lifetime Coins Earned"]
+    ["lifetimeCoins", "💰 Lifetime Coins Earned"],
+    ["currentTreasury", "🏦 Current Olympus Treasury"]
   ];
   const current = Object.fromEntries(categories.map(([key]) => [key, rankings[key].map(([id]) => id)]));
   const previous = db.systemMessages.hallOfFameEntries;
