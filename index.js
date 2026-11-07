@@ -34,10 +34,11 @@ function loadDB() {
       events: parsed.events || {},
       rewards: parsed.rewards || [],
       transactions: parsed.transactions || [],
-      purchases: parsed.purchases || []
+      purchases: parsed.purchases || [],
+      systemMessages: parsed.systemMessages || {}
     };
   } catch {
-    return { members: {}, events: {}, rewards: [], transactions: [], purchases: [] };
+    return { members: {}, events: {}, rewards: [], transactions: [], purchases: [], systemMessages: {} };
   }
 }
 const db = loadDB();
@@ -148,6 +149,59 @@ function awardAchievementRewards(userId, achievementNames) {
   return awarded;
 }
 const ACHIEVEMENT_CHANNEL_ID = "1568652450917916794";
+const HALL_OF_LEGENDS_CHANNEL_ID = "1568652450917916794";
+
+function leaderboardLines(entries, valueFn) {
+  if (!entries.length) return "No Legacy records yet.";
+  const medals = ["🥇", "🥈", "🥉"];
+  return entries.map(([id, data], index) =>
+    `${medals[index] || `**${index + 1}.**`} <@${id}> — **${valueFn(data).toLocaleString()}**`
+  ).join("\n");
+}
+
+function hallOfLegendsEmbed() {
+  const entries = Object.entries(db.members);
+  const reputation = [...entries].sort((a, b) => (b[1].reputation || 0) - (a[1].reputation || 0)).slice(0, 10);
+  const attendance = [...entries].sort((a, b) => (b[1].attended || 0) - (a[1].attended || 0)).slice(0, 10);
+  const lifetimeCoins = [...entries].sort((a, b) => (b[1].lifetimeCoinsEarned || 0) - (a[1].lifetimeCoinsEarned || 0)).slice(0, 10);
+  return new EmbedBuilder()
+    .setColor(0xC9A646)
+    .setTitle("🏛️ THE OUTCASTS | HALL OF LEGENDS")
+    .setDescription("The members whose dedication, loyalty and achievements are shaping Olympus. Rankings update automatically as Legacy progress is recorded.")
+    .addFields(
+      { name: "⚔️ Top Reputation", value: leaderboardLines(reputation, m => m.reputation || 0), inline: false },
+      { name: "🎉 Most Parties Attended", value: leaderboardLines(attendance, m => m.attended || 0), inline: false },
+      { name: "💰 Lifetime Coins Earned", value: leaderboardLines(lifetimeCoins, m => m.lifetimeCoinsEarned || 0), inline: false }
+    )
+    .setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY | Honour is earned." })
+    .setTimestamp();
+}
+
+async function updateHallOfLegends() {
+  try {
+    const channel = await client.channels.fetch(HALL_OF_LEGENDS_CHANNEL_ID);
+    if (!channel || !channel.isTextBased() || !channel.messages) {
+      console.error(`[Olympus Legacy] Hall of Legends channel ${HALL_OF_LEGENDS_CHANNEL_ID} is unavailable or not text-based.`);
+      return;
+    }
+    const embed = hallOfLegendsEmbed();
+    const savedMessageId = db.systemMessages.hallOfLegends;
+    if (savedMessageId) {
+      try {
+        const message = await channel.messages.fetch(savedMessageId);
+        await message.edit({ embeds: [embed] });
+        return;
+      } catch (err) {
+        console.warn("[Olympus Legacy] Saved Hall of Legends message was not found; creating a replacement.");
+      }
+    }
+    const message = await channel.send({ embeds: [embed] });
+    db.systemMessages.hallOfLegends = message.id;
+    saveDB();
+  } catch (err) {
+    console.error("[Olympus Legacy] Could not update Hall of Legends:", err.message);
+  }
+}
 async function announceAchievements(userId, achievementNames) {
   if (!achievementNames || !achievementNames.length) return;
   try {
@@ -234,6 +288,7 @@ const server = http.createServer((req, res) => {
       }
       db.events[eventId] = { eventName, eventType, guildId, confirmedBy, awarded: unique.length, rewards: amount, at: new Date().toISOString() };
       saveDB();
+      await updateHallOfLegends();
       return json(res, 200, { ok: true, awarded: unique.length, ...amount });
     } catch (err) {
       console.error("Attendance API error:", err);
@@ -467,6 +522,7 @@ client.once("ready", async () => {
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
     console.log("Olympus Legacy slash commands registered.");
   } catch (err) { console.error("Slash command registration failed:", err); }
+  await updateHallOfLegends();
 });
 
 client.on("interactionCreate", async i => {
@@ -546,9 +602,8 @@ client.on("interactionCreate", async i => {
       return i.reply({ content: `✅ Purchase \`${id}\` for <@${purchase.userId}> has been marked as fulfilled.${deliveryMessage}\nNote: ${note}`, ephemeral: true });
     }
     if (i.commandName === "leaderboard") {
-      const top = Object.entries(db.members).sort((a,b) => b[1].reputation - a[1].reputation).slice(0,10);
-      const desc = top.length ? top.map(([id,m],n) => `**${n+1}.** <@${id}> — ${m.reputation} reputation • ${m.coins} coins`).join("\n") : "No legacy records yet. Attend a party to begin your journey!";
-      return i.reply({ embeds: [new EmbedBuilder().setColor(0xC9A646).setTitle("🏆 HALL OF LEGENDS").setDescription(desc).setFooter({ text: "Ranked by reputation" })] });
+      await updateHallOfLegends();
+      return i.reply({ content: `🏛️ The Hall of Legends is displayed and updated in <#${HALL_OF_LEGENDS_CHANNEL_ID}>.`, ephemeral: true });
     }
     if (i.commandName === "achievements") {
       const m = member(i.user.id);
@@ -574,6 +629,7 @@ client.on("interactionCreate", async i => {
     `Owner coin award: ${reason}`,
     i.user.id
   );
+  await updateHallOfLegends();
 
   return i.reply({
     content:
@@ -590,6 +646,7 @@ client.on("interactionCreate", async i => {
       const sign = i.commandName === "coins-add" ? 1 : -1;
       logTransaction(u.id, c*sign, r*sign, reason, i.user.id);
       await syncRankRole(i.guildId || GUILD_ID, u.id);
+      await updateHallOfLegends();
       return i.reply({ content: `🏛️ Updated <@${u.id}>: ${c*sign} coins and ${r*sign} reputation. Reason: ${reason}`, ephemeral: true });
     }
     if (i.commandName === "legacy-stats") {
