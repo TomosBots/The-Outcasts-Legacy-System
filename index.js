@@ -436,7 +436,7 @@ client.on("interactionCreate", async i => {
         ? m.badges.map(b => b === "Exclusive Profile Badge" ? "🏅 **Exclusive Badge**" : `🏅 **${b}**`).join("  •  ")
         : "No collectible badges yet. Visit the Olympus Shop to earn your first one!";
       const achievements = m.achievements.length
-        ? m.achievements.map(a => `🏆 ${a}`).join("  •  ")
+        ? m.achievements.map(a => `🏆 ${a}`).join("\n")
         : "No achievements unlocked yet.";
       const nextRank = m.reputation < 250 ? 250 : m.reputation < 750 ? 750 : m.reputation < 1500 ? 1500 : m.reputation < 3000 ? 3000 : m.reputation < 5000 ? 5000 : "Maximum rank";
       const embed = new EmbedBuilder()
