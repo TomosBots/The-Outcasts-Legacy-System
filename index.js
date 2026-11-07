@@ -1,12 +1,13 @@
 // THE OUTCASTS | OLYMPUS LEGACY
 // Discord.js v14 + authenticated attendance API for the Signup Bot.
 // Required: DISCORD_TOKEN, CLIENT_ID, GUILD_ID, LEGACY_API_KEY
-// Optional: DATA_DIR=/data, PORT=3000
+// Optional: DATA_DIR=/data, PORT=3000, SHOP_SUPPORTER_ROLE_ID, SHOP_PATRON_ROLE_ID
 // Node.js 18+ required (native fetch).
 
 const {
   Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes,
-  EmbedBuilder, PermissionFlagsBits
+  EmbedBuilder, PermissionFlagsBits, ActionRowBuilder,
+  StringSelectMenuBuilder, ButtonBuilder, ButtonStyle
 } = require("discord.js");
 const http = require("node:http");
 const fs = require("node:fs");
@@ -32,10 +33,11 @@ function loadDB() {
       members: parsed.members || {},
       events: parsed.events || {},
       rewards: parsed.rewards || [],
-      transactions: parsed.transactions || []
+      transactions: parsed.transactions || [],
+      purchases: parsed.purchases || []
     };
   } catch {
-    return { members: {}, events: {}, rewards: [], transactions: [] };
+    return { members: {}, events: {}, rewards: [], transactions: [], purchases: [] };
   }
 }
 const db = loadDB();
@@ -102,26 +104,6 @@ function updateAchievements(m) {
     }
   }
   return newlyUnlocked;
-}
-
-// Backfill achievements for members whose attendance/coin history existed
-// before the achievement system was deployed. This is intentionally silent
-// to avoid flooding Hall of Legends on every deployment.
-function backfillHistoricalAchievements() {
-  let changed = false;
-  for (const m of Object.values(db.members)) {
-    if (!Array.isArray(m.achievements)) m.achievements = [];
-    if (typeof m.attended !== "number") m.attended = 0;
-    if (typeof m.lifetimeCoinsEarned !== "number") m.lifetimeCoinsEarned = 0;
-    const unlocked = updateAchievements(m);
-    if (unlocked.length) changed = true;
-  }
-  if (changed) {
-    saveDB();
-    console.log("🏛️ Historical Olympus achievements backfilled.");
-  } else {
-    console.log("🏛️ Historical Olympus achievements checked; no new unlocks.");
-  }
 }
 const ACHIEVEMENT_CHANNEL_ID = "1568652450917916794";
 async function announceAchievements(userId, achievementNames) {
@@ -210,11 +192,184 @@ const server = http.createServer((req, res) => {
   });
 });
 
+
+// OLYMPUS SHOP
+// Automatic role delivery is enabled when the matching Railway role-ID
+// variable is configured. Other rewards are paid for immediately and queued
+// for an administrator to fulfil manually. Purchases are non-refundable.
+const SHOP_ITEMS = [
+  {
+    id: "supporter_role",
+    name: "Olympus Supporter Role",
+    cost: 500,
+    description: "An exclusive shop role displayed on your Discord profile.",
+    delivery: "role",
+    roleEnv: "SHOP_SUPPORTER_ROLE_ID",
+    repeatable: false
+  },
+  {
+    id: "profile_badge",
+    name: "Exclusive Profile Badge",
+    cost: 750,
+    description: "An exclusive profile recognition reward, delivered by the team.",
+    delivery: "manual",
+    repeatable: true
+  },
+  {
+    id: "vip_200_gem_pass",
+    name: "200 Gem VIP Pass",
+    cost: 5000,
+    description: "One VIP pass for a 200 Gem party. The team will contact you to arrange redemption.",
+    delivery: "manual",
+    repeatable: true
+  },
+  {
+    id: "premium_title",
+    name: "Premium Title",
+    cost: 1500,
+    description: "A premium community title, arranged by the team.",
+    delivery: "manual",
+    repeatable: true
+  },
+  {
+    id: "olympus_patron_role",
+    name: "Olympus Patron Role",
+    cost: 2500,
+    description: "A prestigious exclusive Olympus shop role.",
+    delivery: "role",
+    roleEnv: "SHOP_PATRON_ROLE_ID",
+    repeatable: false
+  }
+];
+
+function shopItem(id) {
+  return SHOP_ITEMS.find(item => item.id === id);
+}
+function purchaseId() {
+  return `OLY-${Date.now().toString(36).toUpperCase()}-${String(db.purchases.length + 1).padStart(4, "0")}`;
+}
+function shopCatalogueEmbed() {
+  const description = SHOP_ITEMS.map(item =>
+    `**${item.name}** — **${item.cost.toLocaleString()} coins**\n${item.description}\n` +
+    `*Delivery: ${item.delivery === "role" ? (process.env[item.roleEnv] ? "Automatic Discord role" : "Role delivery (role ID still needs configuring)") : "Manual team fulfilment"}*`
+  ).join("\n\n");
+  return new EmbedBuilder()
+    .setColor(0xC9A646)
+    .setTitle("🏛️ THE OLYMPUS SHOP")
+    .setDescription(description)
+    .setFooter({ text: "All members may shop • Purchases are final and non-refundable." });
+}
+function shopSelectRow() {
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("olympus_shop_select")
+    .setPlaceholder("Choose a reward to view")
+    .addOptions(SHOP_ITEMS.map(item => ({
+      label: item.name,
+      description: `${item.cost.toLocaleString()} Olympus Coins`,
+      value: item.id
+    })));
+  return new ActionRowBuilder().addComponents(menu);
+}
+function shopPurchaseEmbed(item, userId) {
+  const delivery = item.delivery === "role"
+    ? (process.env[item.roleEnv] ? "Automatic Discord role delivery after confirmation." : "The team will fulfil this role manually until its role ID is configured.")
+    : "The purchase will be added to the admin fulfilment queue.";
+  return new EmbedBuilder()
+    .setColor(0xC9A646)
+    .setTitle(`🛒 CONFIRM: ${item.name}`)
+    .setDescription(
+      `Cost: **${item.cost.toLocaleString()} Olympus Coins**\n` +
+      `Delivery: ${delivery}\n\n` +
+      `Purchases are **non-refundable**. Confirm only if you want to spend these coins.`
+    )
+    .setFooter({ text: `Buyer: ${userId}` });
+}
+async function completeShopPurchase(interaction, item) {
+  const m = member(interaction.user.id);
+  if (!item) return interaction.reply({ content: "That shop item is no longer available.", ephemeral: true });
+  if (m.coins < item.cost) {
+    return interaction.update({
+      content: `You need **${item.cost.toLocaleString()}** coins, but your balance is **${m.coins.toLocaleString()}**.`,
+      embeds: [], components: []
+    });
+  }
+
+  const configuredRoleId = item.delivery === "role" ? process.env[item.roleEnv] : null;
+  if (configuredRoleId && !/^\d{17,20}$/.test(configuredRoleId)) {
+    return interaction.update({ content: "This shop reward has an invalid role configuration. Please contact an administrator. No coins were deducted.", embeds: [], components: [] });
+  }
+  if (configuredRoleId) {
+    const guild = await client.guilds.fetch(GUILD_ID);
+    const guildMember = await guild.members.fetch(interaction.user.id);
+    if (guildMember.roles.cache.has(configuredRoleId)) {
+      return interaction.update({ content: "You already own this role reward. No coins were deducted.", embeds: [], components: [] });
+    }
+  }
+
+  // Deduct and record before attempting role delivery, so a failed Discord
+  // role operation remains visible in the fulfilment queue and cannot be lost.
+  m.coins -= item.cost;
+  const purchase = {
+    id: purchaseId(),
+    userId: interaction.user.id,
+    itemId: item.id,
+    itemName: item.name,
+    cost: item.cost,
+    status: "pending",
+    delivery: "manual",
+    createdAt: new Date().toISOString(),
+    fulfilledAt: null,
+    fulfilledBy: null
+  };
+  db.purchases.push(purchase);
+  db.transactions.unshift({
+    userId: interaction.user.id,
+    coins: -item.cost,
+    reputation: 0,
+    reason: `Olympus Shop purchase: ${item.name} (${purchase.id})`,
+    actorId: interaction.user.id,
+    at: new Date().toISOString()
+  });
+  db.transactions = db.transactions.slice(0, 5000);
+  saveDB();
+
+  if (configuredRoleId) {
+    try {
+      const guild = await client.guilds.fetch(GUILD_ID);
+      const guildMember = await guild.members.fetch(interaction.user.id);
+      await guildMember.roles.add(configuredRoleId, `Olympus Shop purchase ${purchase.id}`);
+      purchase.status = "fulfilled";
+      purchase.delivery = "automatic";
+      purchase.fulfilledAt = new Date().toISOString();
+      purchase.fulfilledBy = client.user.id;
+      saveDB();
+      return interaction.update({
+        content: `🏛️ Purchase complete! **${item.name}** has been added to your Discord roles.\nPurchase reference: \`${purchase.id}\`\n**${item.cost.toLocaleString()} coins** have been deducted. This purchase is non-refundable.`,
+        embeds: [], components: []
+      });
+    } catch (err) {
+      console.error(`[Olympus Shop] Automatic role delivery failed for ${purchase.id}:`, err.message);
+      // Keep the paid purchase pending for admin fulfilment.
+    }
+  }
+
+  return interaction.update({
+    content: `🏛️ **Purchase recorded!**\n\n**${item.name}**\nCoins deducted: **${item.cost.toLocaleString()}**\nPurchase reference: \`${purchase.id}\`\n\nYour reward is now in the team fulfilment queue. Purchases are non-refundable.`,
+    embeds: [], components: []
+  });
+}
+
 const commands = [
   new SlashCommandBuilder().setName("balance").setDescription("Check your Olympus Coins."),
   new SlashCommandBuilder().setName("reputation").setDescription("View your Olympus rank and reputation.")
     .addUserOption(o => o.setName("member").setDescription("Member to view").setRequired(false)),
   new SlashCommandBuilder().setName("shop").setDescription("Browse Olympus Legacy rewards."),
+  new SlashCommandBuilder().setName("shop-pending").setDescription("View pending Olympus Shop fulfilment.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder().setName("shop-fulfil").setDescription("Mark a manually delivered shop purchase as fulfilled.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addStringOption(o => o.setName("purchase_id").setDescription("Purchase reference from /shop-pending").setRequired(true).setMaxLength(40))
+    .addStringOption(o => o.setName("note").setDescription("Fulfilment note").setRequired(false).setMaxLength(150)),
   new SlashCommandBuilder().setName("leaderboard").setDescription("View the Olympus Legacy leaderboard."),
   new SlashCommandBuilder().setName("achievements").setDescription("View your unlocked Olympus achievements."),
   new SlashCommandBuilder().setName("coins-add").setDescription("Award coins and reputation manually.")
@@ -236,7 +391,6 @@ const commands = [
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 client.once("ready", async () => {
   console.log(`🏛️ Olympus Legacy online as ${client.user.tag}`);
-  backfillHistoricalAchievements();
   server.listen(PORT, "0.0.0.0", () => console.log(`Olympus Legacy API listening on ${PORT}`));
   try {
     const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -256,8 +410,34 @@ client.on("interactionCreate", async i => {
       return i.reply({ embeds: [new EmbedBuilder().setColor(0xC9A646).setTitle(`⚔️ ${u.username}'S LEGACY`).setDescription(`**Rank:** ${rank(m.reputation)}\n**Reputation:** ${m.reputation.toLocaleString()}\n**Parties attended:** ${m.attended}\n**Next rank:** ${m.reputation < 250 ? 250 : m.reputation < 750 ? 750 : m.reputation < 1500 ? 1500 : m.reputation < 3000 ? 3000 : m.reputation < 5000 ? 5000 : "Maximum rank"}`).setThumbnail(u.displayAvatarURL()).setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY" })], ephemeral: true });
     }
     if (i.commandName === "shop") {
-      const list = db.rewards.length ? db.rewards.map(r => `**${r.name}** — ${r.cost} coins\n${r.description}`).join("\n\n") : "The Olympus shop is being prepared. New rewards will be announced soon.";
-      return i.reply({ embeds: [new EmbedBuilder().setColor(0xC9A646).setTitle("🎁 THE OLYMPUS REWARDS SHOP").setDescription(list).setFooter({ text: "Purchases and reward fulfilment will be enabled in a later shop release." })], ephemeral: true });
+      return i.reply({
+        embeds: [shopCatalogueEmbed()],
+        components: [shopSelectRow()],
+        ephemeral: true
+      });
+    }
+    if (i.commandName === "shop-pending") {
+      const pending = db.purchases.filter(p => p.status === "pending").slice(0, 20);
+      const description = pending.length
+        ? pending.map(p => `**${p.id}** — ${p.itemName}\nBuyer: <@${p.userId}> • ${p.cost.toLocaleString()} coins`).join("\n\n")
+        : "There are no pending shop purchases.";
+      return i.reply({
+        embeds: [new EmbedBuilder().setColor(0xC9A646).setTitle("🏛️ OLYMPUS SHOP | PENDING FULFILMENT").setDescription(description).setFooter({ text: "After delivering a reward manually, use /shop-fulfil with its purchase reference." })],
+        ephemeral: true
+      });
+    }
+    if (i.commandName === "shop-fulfil") {
+      const id = i.options.getString("purchase_id");
+      const note = i.options.getString("note") || "Manually fulfilled by staff.";
+      const purchase = db.purchases.find(p => p.id === id);
+      if (!purchase) return i.reply({ content: "Purchase reference not found.", ephemeral: true });
+      if (purchase.status === "fulfilled") return i.reply({ content: `Purchase ${id} is already marked as fulfilled.`, ephemeral: true });
+      purchase.status = "fulfilled";
+      purchase.fulfilledAt = new Date().toISOString();
+      purchase.fulfilledBy = i.user.id;
+      purchase.fulfilmentNote = note;
+      saveDB();
+      return i.reply({ content: `✅ Purchase \`${id}\` for <@${purchase.userId}> has been marked as fulfilled.\nNote: ${note}`, ephemeral: true });
     }
     if (i.commandName === "leaderboard") {
       const top = Object.entries(db.members).sort((a,b) => b[1].reputation - a[1].reputation).slice(0,10);
@@ -288,4 +468,30 @@ client.on("interactionCreate", async i => {
     else await i.reply(payload).catch(()=>{});
   }
 });
+
+client.on("interactionCreate", async i => {
+  if (i.isStringSelectMenu() && i.customId === "olympus_shop_select") {
+    const item = shopItem(i.values[0]);
+    if (!item) return i.reply({ content: "That shop item is unavailable.", ephemeral: true });
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`olympus_shop_buy:${item.id}`).setLabel("Confirm Purchase").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("olympus_shop_cancel").setLabel("Cancel").setStyle(ButtonStyle.Secondary)
+    );
+    return i.update({
+      embeds: [shopPurchaseEmbed(item, i.user.id)],
+      components: [row]
+    });
+  }
+
+  if (i.isButton() && i.customId.startsWith("olympus_shop_buy:")) {
+    const itemId = i.customId.slice("olympus_shop_buy:".length);
+    const item = shopItem(itemId);
+    return completeShopPurchase(i, item);
+  }
+
+  if (i.isButton() && i.customId === "olympus_shop_cancel") {
+    return i.update({ content: "Purchase cancelled. No coins were deducted.", embeds: [], components: [] });
+  }
+});
+
 client.login(TOKEN);
