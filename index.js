@@ -103,6 +103,26 @@ function updateAchievements(m) {
   }
   return newlyUnlocked;
 }
+
+// Backfill achievements for members whose attendance/coin history existed
+// before the achievement system was deployed. This is intentionally silent
+// to avoid flooding Hall of Legends on every deployment.
+function backfillHistoricalAchievements() {
+  let changed = false;
+  for (const m of Object.values(db.members)) {
+    if (!Array.isArray(m.achievements)) m.achievements = [];
+    if (typeof m.attended !== "number") m.attended = 0;
+    if (typeof m.lifetimeCoinsEarned !== "number") m.lifetimeCoinsEarned = 0;
+    const unlocked = updateAchievements(m);
+    if (unlocked.length) changed = true;
+  }
+  if (changed) {
+    saveDB();
+    console.log("🏛️ Historical Olympus achievements backfilled.");
+  } else {
+    console.log("🏛️ Historical Olympus achievements checked; no new unlocks.");
+  }
+}
 const ACHIEVEMENT_CHANNEL_ID = "1568652450917916794";
 async function announceAchievements(userId, achievementNames) {
   if (!achievementNames || !achievementNames.length) return;
@@ -216,6 +236,7 @@ const commands = [
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 client.once("ready", async () => {
   console.log(`🏛️ Olympus Legacy online as ${client.user.tag}`);
+  backfillHistoricalAchievements();
   server.listen(PORT, "0.0.0.0", () => console.log(`Olympus Legacy API listening on ${PORT}`));
   try {
     const rest = new REST({ version: "10" }).setToken(TOKEN);
