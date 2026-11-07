@@ -47,7 +47,10 @@ function saveDB() {
   fs.renameSync(tmp, DB_FILE);
 }
 function member(id) {
-  if (!db.members[id]) db.members[id] = { coins: 0, reputation: 0, achievements: [], attended: 0, highestRankIndex: 0, lifetimeCoinsEarned: 0 };
+  if (!db.members[id]) db.members[id] = { coins: 0, reputation: 0, achievements: [], badges: [], attended: 0, highestRankIndex: 0, lifetimeCoinsEarned: 0 };
+  // Add the collection to existing member records without resetting their progress.
+  if (!Array.isArray(db.members[id].badges)) db.members[id].badges = [];
+  if (!Array.isArray(db.members[id].achievements)) db.members[id].achievements = [];
   return db.members[id];
 }
 const RANKS = [
@@ -361,6 +364,8 @@ async function completeShopPurchase(interaction, item) {
 
 const commands = [
   new SlashCommandBuilder().setName("balance").setDescription("Check your Olympus Coins."),
+  new SlashCommandBuilder().setName("profile").setDescription("View an Olympus Legacy member profile.")
+    .addUserOption(o => o.setName("member").setDescription("Member whose profile you want to view").setRequired(false)),
   new SlashCommandBuilder().setName("reputation").setDescription("View your Olympus rank and reputation.")
     .addUserOption(o => o.setName("member").setDescription("Member to view").setRequired(false)),
   new SlashCommandBuilder().setName("shop").setDescription("Browse Olympus Legacy rewards."),
@@ -424,6 +429,24 @@ client.on("interactionCreate", async i => {
       const m = member(i.user.id);
       return i.reply({ embeds: [new EmbedBuilder().setColor(0xC9A646).setTitle("🏛️ YOUR OLYMPUS TREASURY").setDescription(`💰 **Olympus Coins:** ${m.coins.toLocaleString()}\n⭐ **Reputation:** ${m.reputation.toLocaleString()}\n⚔️ **Rank:** ${rank(m.reputation)}`).setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY" })], ephemeral: true });
     }
+    if (i.commandName === "profile") {
+      const u = i.options.getUser("member") || i.user;
+      const m = member(u.id);
+      const badges = m.badges.length ? m.badges.map(b => `🏅 **${b}**`).join("\n") : "No collectible badges yet. Visit the Olympus Shop to earn your first one!";
+      const achievements = m.achievements.length ? m.achievements.map(a => `🏆 ${a}`).join("\n") : "No achievements unlocked yet.";
+      const nextRank = m.reputation < 250 ? 250 : m.reputation < 750 ? 750 : m.reputation < 1500 ? 1500 : m.reputation < 3000 ? 3000 : m.reputation < 5000 ? 5000 : "Maximum rank";
+      const embed = new EmbedBuilder()
+        .setColor(0xC9A646)
+        .setTitle(`🏛️ ${u.username.toUpperCase()}'S OLYMPUS LEGACY`)
+        .setThumbnail(u.displayAvatarURL())
+        .setDescription(`**Rank:** ${rank(m.reputation)}\n**Reputation:** ${m.reputation.toLocaleString()}\n**Olympus Coins:** ${m.coins.toLocaleString()}\n**Parties attended:** ${m.attended}\n**Next rank:** ${nextRank}`)
+        .addFields(
+          { name: "🏅 Collectible Badges", value: badges },
+          { name: "🏆 Achievements", value: achievements }
+        )
+        .setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY" });
+      return i.reply({ embeds: [embed], ephemeral: true });
+    }
     if (i.commandName === "reputation") {
       const u = i.options.getUser("member") || i.user, m = member(u.id);
       return i.reply({ embeds: [new EmbedBuilder().setColor(0xC9A646).setTitle(`⚔️ ${u.username}'S LEGACY`).setDescription(`**Rank:** ${rank(m.reputation)}\n**Reputation:** ${m.reputation.toLocaleString()}\n**Parties attended:** ${m.attended}\n**Next rank:** ${m.reputation < 250 ? 250 : m.reputation < 750 ? 750 : m.reputation < 1500 ? 1500 : m.reputation < 3000 ? 3000 : m.reputation < 5000 ? 5000 : "Maximum rank"}`).setThumbnail(u.displayAvatarURL()).setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY" })], ephemeral: true });
@@ -451,12 +474,25 @@ client.on("interactionCreate", async i => {
       const purchase = db.purchases.find(p => p.id === id);
       if (!purchase) return i.reply({ content: "Purchase reference not found.", ephemeral: true });
       if (purchase.status === "fulfilled") return i.reply({ content: `Purchase ${id} is already marked as fulfilled.`, ephemeral: true });
+      // Collectible profile badges are delivered directly into the member's
+      // permanent Legacy collection when staff fulfil the purchase.
+      let deliveryMessage = "";
+      if (purchase.itemId === "profile_badge") {
+        const buyer = member(purchase.userId);
+        const badgeName = "Exclusive Profile Badge";
+        if (!buyer.badges.includes(badgeName)) {
+          buyer.badges.push(badgeName);
+          deliveryMessage = `\n🏅 **${badgeName}** has been added to <@${purchase.userId}>'s Legacy profile.`;
+        } else {
+          deliveryMessage = `\nℹ️ <@${purchase.userId}> already owns this collectible badge; no duplicate was added.`;
+        }
+      }
       purchase.status = "fulfilled";
       purchase.fulfilledAt = new Date().toISOString();
       purchase.fulfilledBy = i.user.id;
       purchase.fulfilmentNote = note;
       saveDB();
-      return i.reply({ content: `✅ Purchase \`${id}\` for <@${purchase.userId}> has been marked as fulfilled.\nNote: ${note}`, ephemeral: true });
+      return i.reply({ content: `✅ Purchase \`${id}\` for <@${purchase.userId}> has been marked as fulfilled.${deliveryMessage}\nNote: ${note}`, ephemeral: true });
     }
     if (i.commandName === "leaderboard") {
       const top = Object.entries(db.members).sort((a,b) => b[1].reputation - a[1].reputation).slice(0,10);
