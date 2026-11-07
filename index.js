@@ -558,6 +558,50 @@ const commands = [
     .addIntegerOption(o => o.setName("coins").setDescription("Coins to remove").setMinValue(0).setMaxValue(100000).setRequired(true))
     .addIntegerOption(o => o.setName("reputation").setDescription("Reputation to remove").setMinValue(0).setMaxValue(100000).setRequired(true))
     .addStringOption(o => o.setName("reason").setDescription("Reason for the adjustment").setMaxLength(150).setRequired(true)),
+  new SlashCommandBuilder().setName("remove-parties").setDescription("Remove parties attended from a member's Legacy record.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addUserOption(o => o.setName("member").setDescription("Member whose attendance to adjust").setRequired(true))
+    .addIntegerOption(o => o.setName("amount").setDescription("Number of parties to remove").setMinValue(1).setMaxValue(1000).setRequired(true))
+    .addStringOption(o => o.setName("reason").setDescription("Reason for the adjustment").setMaxLength(150).setRequired(true)),
+  new SlashCommandBuilder().setName("add-parties").setDescription("Add recorded parties attended to a member.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addUserOption(o => o.setName("member").setDescription("Member whose attendance to adjust").setRequired(true))
+    .addIntegerOption(o => o.setName("amount").setDescription("Number of parties to add").setMinValue(1).setMaxValue(1000).setRequired(true))
+    .addStringOption(o => o.setName("reason").setDescription("Reason for the adjustment").setMaxLength(150).setRequired(true)),
+  new SlashCommandBuilder().setName("add-badge").setDescription("Add a collectible badge to a member's profile.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addUserOption(o => o.setName("member").setDescription("Member receiving the badge").setRequired(true))
+    .addStringOption(o => o.setName("badge").setDescription("Badge name").setMaxLength(80).setRequired(true)),
+  new SlashCommandBuilder().setName("remove-badge").setDescription("Remove a collectible badge from a member's profile.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addUserOption(o => o.setName("member").setDescription("Member losing the badge").setRequired(true))
+    .addStringOption(o => o.setName("badge").setDescription("Exact badge name to remove").setMaxLength(80).setRequired(true)),
+  new SlashCommandBuilder().setName("add-achievement").setDescription("Manually award an Olympus Legacy achievement.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addUserOption(o => o.setName("member").setDescription("Member receiving the achievement").setRequired(true))
+    .addStringOption(o => o.setName("achievement").setDescription("Achievement to award").setRequired(true).addChoices(
+      { name: "First Steps", value: "First Steps" },
+      { name: "Loyal Soul", value: "Loyal Soul" },
+      { name: "Devoted Member", value: "Devoted Member" },
+      { name: "Olympian", value: "Olympian" },
+      { name: "Legendary", value: "Legendary" },
+      { name: "Eternal Legend", value: "Eternal Legend" },
+      { name: "Wealth of Olympus", value: "Wealth of Olympus" },
+      { name: "Treasury Keeper", value: "Treasury Keeper" }
+    )),
+  new SlashCommandBuilder().setName("remove-achievement").setDescription("Remove an achievement from a member's profile.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addUserOption(o => o.setName("member").setDescription("Member losing the achievement").setRequired(true))
+    .addStringOption(o => o.setName("achievement").setDescription("Achievement to remove").setRequired(true).addChoices(
+      { name: "First Steps", value: "First Steps" },
+      { name: "Loyal Soul", value: "Loyal Soul" },
+      { name: "Devoted Member", value: "Devoted Member" },
+      { name: "Olympian", value: "Olympian" },
+      { name: "Legendary", value: "Legendary" },
+      { name: "Eternal Legend", value: "Eternal Legend" },
+      { name: "Wealth of Olympus", value: "Wealth of Olympus" },
+      { name: "Treasury Keeper", value: "Treasury Keeper" }
+    )),
   new SlashCommandBuilder().setName("legacy-stats").setDescription("View Olympus Legacy system statistics.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
     new SlashCommandBuilder()
@@ -716,6 +760,131 @@ client.on("interactionCreate", async i => {
       await updateHallOfLegends();
       return i.reply({ content: `🏛️ Updated <@${u.id}>: ${c*sign} coins and ${r*sign} reputation. Reason: ${reason}`, ephemeral: true });
     }
+    if (i.commandName === "remove-parties") {
+      const u = i.options.getUser("member");
+      const amount = i.options.getInteger("amount");
+      const reason = i.options.getString("reason");
+      const m = member(u.id);
+
+      if (amount > m.attended) {
+        return i.reply({
+          content: `⛔ <@${u.id}> only has **${m.attended}** recorded parties attended. You cannot remove ${amount}.`,
+          ephemeral: true
+        });
+      }
+
+      m.attended -= amount;
+      db.transactions.unshift({
+        userId: u.id,
+        coins: 0,
+        reputation: 0,
+        reason: `Attendance adjustment: -${amount} parties. ${reason}`,
+        actorId: i.user.id,
+        at: new Date().toISOString()
+      });
+      db.transactions = db.transactions.slice(0, 5000);
+      saveDB();
+      await updateHallOfLegends();
+
+      return i.reply({
+        content:
+          `🏛️ **OLYMPUS LEGACY | ATTENDANCE ADJUSTED**\\n\\n` +
+          `Member: <@${u.id}>\\n` +
+          `Parties removed: **${amount}**\\n` +
+          `New recorded attendance: **${m.attended}**\\n` +
+          `Reason: ${reason}\\n\\n` +
+          `Adjusted by: <@${i.user.id}>`,
+        ephemeral: true
+      });
+    }
+    if (i.commandName === "add-parties") {
+      const u = i.options.getUser("member");
+      const amount = i.options.getInteger("amount");
+      const reason = i.options.getString("reason");
+      const m = member(u.id);
+      m.attended += amount;
+
+      const newlyUnlocked = updateAchievements(m);
+      if (newlyUnlocked.length) {
+        awardAchievementRewards(u.id, newlyUnlocked);
+        await announceAchievements(u.id, newlyUnlocked);
+      }
+
+      db.transactions.unshift({
+        userId: u.id, coins: 0, reputation: 0,
+        reason: `Attendance adjustment: +${amount} parties. ${reason}`,
+        actorId: i.user.id, at: new Date().toISOString()
+      });
+      db.transactions = db.transactions.slice(0, 5000);
+      saveDB();
+      await updateHallOfLegends();
+
+      return i.reply({
+        content: `🏛️ **ATTENDANCE UPDATED**\\n\\nMember: <@${u.id}>\\nParties added: **${amount}**\\nNew recorded attendance: **${m.attended}**\\nReason: ${reason}`,
+        ephemeral: true
+      });
+    }
+
+    if (i.commandName === "add-badge" || i.commandName === "remove-badge") {
+      const u = i.options.getUser("member");
+      const badge = i.options.getString("badge").trim();
+      const m = member(u.id);
+
+      if (i.commandName === "add-badge") {
+        if (m.badges.includes(badge)) {
+          return i.reply({ content: `<@${u.id}> already has the badge **${badge}**.`, ephemeral: true });
+        }
+        m.badges.push(badge);
+      } else {
+        const index = m.badges.indexOf(badge);
+        if (index === -1) {
+          return i.reply({ content: `<@${u.id}> does not have the badge **${badge}**. Badge names must match exactly.`, ephemeral: true });
+        }
+        m.badges.splice(index, 1);
+      }
+
+      saveDB();
+      const action = i.commandName === "add-badge" ? "added to" : "removed from";
+      return i.reply({
+        content: `🏅 Badge **${badge}** has been ${action} <@${u.id}>'s profile.`,
+        ephemeral: true
+      });
+    }
+
+    if (i.commandName === "add-achievement" || i.commandName === "remove-achievement") {
+      const u = i.options.getUser("member");
+      const achievement = i.options.getString("achievement");
+      const m = member(u.id);
+
+      if (i.commandName === "add-achievement") {
+        if (m.achievements.includes(achievement)) {
+          return i.reply({ content: `<@${u.id}> already has **${achievement}**.`, ephemeral: true });
+        }
+        m.achievements.push(achievement);
+        const awarded = awardAchievementRewards(u.id, [achievement]);
+        saveDB();
+        await announceAchievements(u.id, [achievement]);
+        const bonus = awarded.reduce((sum, item) => sum + item.amount, 0);
+        return i.reply({
+          content: `🏆 **${achievement}** has been awarded to <@${u.id}>.${bonus ? `\\n🎁 Achievement bonus: **${bonus.toLocaleString()} Olympus Coins**.` : ""}`,
+          ephemeral: true
+        });
+      }
+
+      const index = m.achievements.indexOf(achievement);
+      if (index === -1) {
+        return i.reply({ content: `<@${u.id}> does not have **${achievement}**.`, ephemeral: true });
+      }
+      m.achievements.splice(index, 1);
+      // Keep reward history intact: removing an achievement does not claw back
+      // coins already awarded or automatically pay the reward again later.
+      saveDB();
+      return i.reply({
+        content: `🏆 **${achievement}** has been removed from <@${u.id}>'s profile. Any coins previously awarded for it remain in their balance.`,
+        ephemeral: true
+      });
+    }
+
     if (i.commandName === "legacy-stats") {
       const totalCoins = Object.values(db.members).reduce((n,m)=>n+m.coins,0);
       const totalRep = Object.values(db.members).reduce((n,m)=>n+m.reputation,0);
