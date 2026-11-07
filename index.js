@@ -159,22 +159,81 @@ function leaderboardLines(entries, valueFn) {
   ).join("\n");
 }
 
-function hallOfLegendsEmbed() {
+const HALL_OF_FAME_TEST_ACCOUNT_IDS = new Set([
+  "1549252381458436189", // Ares - owner's test account
+  "234045604970496001"   // Tomo BLD - test alt account
+]);
+
+function getHallRankings() {
   const entries = Object.entries(db.members);
-  const reputation = [...entries].sort((a, b) => (b[1].reputation || 0) - (a[1].reputation || 0)).slice(0, 10);
-  const attendance = [...entries].sort((a, b) => (b[1].attended || 0) - (a[1].attended || 0)).slice(0, 10);
-  const lifetimeCoins = [...entries].sort((a, b) => (b[1].lifetimeCoinsEarned || 0) - (a[1].lifetimeCoinsEarned || 0)).slice(0, 10);
+  return {
+    reputation: [...entries].sort((a, b) => (b[1].reputation || 0) - (a[1].reputation || 0)).slice(0, 10),
+    attendance: [...entries].sort((a, b) => (b[1].attended || 0) - (a[1].attended || 0)).slice(0, 10),
+    lifetimeCoins: [...entries].sort((a, b) => (b[1].lifetimeCoinsEarned || 0) - (a[1].lifetimeCoinsEarned || 0)).slice(0, 10)
+  };
+}
+
+function hallOfLegendsEmbed() {
+  const rankings = getHallRankings();
   return new EmbedBuilder()
     .setColor(0xC9A646)
     .setTitle("🏛️ THE OUTCASTS | HALL OF LEGENDS")
     .setDescription("The members whose dedication, loyalty and achievements are shaping Olympus. Rankings update automatically as Legacy progress is recorded.")
     .addFields(
-      { name: "⚔️ Top Reputation", value: leaderboardLines(reputation, m => m.reputation || 0), inline: false },
-      { name: "🎉 Most Parties Attended", value: leaderboardLines(attendance, m => m.attended || 0), inline: false },
-      { name: "💰 Lifetime Coins Earned", value: leaderboardLines(lifetimeCoins, m => m.lifetimeCoinsEarned || 0), inline: false }
+      { name: "⚔️ Top Reputation", value: leaderboardLines(rankings.reputation, m => m.reputation || 0), inline: false },
+      { name: "🎉 Most Parties Attended", value: leaderboardLines(rankings.attendance, m => m.attended || 0), inline: false },
+      { name: "💰 Lifetime Coins Earned", value: leaderboardLines(rankings.lifetimeCoins, m => m.lifetimeCoinsEarned || 0), inline: false }
     )
     .setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY | Honour is earned." })
     .setTimestamp();
+}
+
+async function announceHallOfFameEntries(channel, rankings) {
+  const categories = [
+    ["reputation", "⚔️ Top Reputation"],
+    ["attendance", "🎉 Most Parties Attended"],
+    ["lifetimeCoins", "💰 Lifetime Coins Earned"]
+  ];
+  const current = Object.fromEntries(categories.map(([key]) => [key, rankings[key].map(([id]) => id)]));
+  const previous = db.systemMessages.hallOfFameEntries;
+
+  // First run establishes a baseline, avoiding a burst of announcements for
+  // members who were already on the leaderboard before this feature existed.
+  if (!previous || typeof previous !== "object") {
+    db.systemMessages.hallOfFameEntries = current;
+    saveDB();
+    return;
+  }
+
+  const announcements = [];
+  for (const [key, label] of categories) {
+    const oldIds = Array.isArray(previous[key]) ? previous[key] : [];
+    rankings[key].forEach(([userId], index) => {
+      if (!oldIds.includes(userId) && !HALL_OF_FAME_TEST_ACCOUNT_IDS.has(userId)) {
+        announcements.push({ userId, label, position: index + 1 });
+      }
+    });
+  }
+
+  // Persist the new positions before sending so refreshes/restarts cannot
+  // repeatedly announce the same Top 10 entry.
+  db.systemMessages.hallOfFameEntries = current;
+  saveDB();
+
+  for (const entry of announcements) {
+    const ordinal = entry.position === 1 ? "1st" : entry.position === 2 ? "2nd" : entry.position === 3 ? "3rd" : `${entry.position}th`;
+    const embed = new EmbedBuilder()
+      .setColor(0xC9A646)
+      .setTitle("🏆 A NEW LEGEND HAS ENTERED THE HALL OF FAME!")
+      .setDescription(`Congratulations <@${entry.userId}>!
+
+You've entered the **Top 10 ${entry.label}** leaderboard at **${ordinal} place**. Your dedication is being recognised throughout Olympus!`)
+      .setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY | Honour is earned." })
+      .setTimestamp();
+    await channel.send({ embeds: [embed] }).catch(err => {
+      console.error(`[Olympus Legacy] Could not announce Hall of Fame entry for ${entry.userId}:`, err.message);
+    });
+  }
 }
 
 async function updateHallOfLegends() {
@@ -184,20 +243,25 @@ async function updateHallOfLegends() {
       console.error(`[Olympus Legacy] Hall of Legends channel ${HALL_OF_LEGENDS_CHANNEL_ID} is unavailable or not text-based.`);
       return;
     }
+    const rankings = getHallRankings();
     const embed = hallOfLegendsEmbed();
     const savedMessageId = db.systemMessages.hallOfLegends;
     if (savedMessageId) {
       try {
         const message = await channel.messages.fetch(savedMessageId);
         await message.edit({ embeds: [embed] });
-        return;
       } catch (err) {
         console.warn("[Olympus Legacy] Saved Hall of Legends message was not found; creating a replacement.");
+        const message = await channel.send({ embeds: [embed] });
+        db.systemMessages.hallOfLegends = message.id;
+        saveDB();
       }
+    } else {
+      const message = await channel.send({ embeds: [embed] });
+      db.systemMessages.hallOfLegends = message.id;
+      saveDB();
     }
-    const message = await channel.send({ embeds: [embed] });
-    db.systemMessages.hallOfLegends = message.id;
-    saveDB();
+    await announceHallOfFameEntries(channel, rankings);
   } catch (err) {
     console.error("[Olympus Legacy] Could not update Hall of Legends:", err.message);
   }
