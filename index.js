@@ -385,7 +385,25 @@ const commands = [
     .addIntegerOption(o => o.setName("reputation").setDescription("Reputation to remove").setMinValue(0).setMaxValue(100000).setRequired(true))
     .addStringOption(o => o.setName("reason").setDescription("Reason for the adjustment").setMaxLength(150).setRequired(true)),
   new SlashCommandBuilder().setName("legacy-stats").setDescription("View Olympus Legacy system statistics.")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    new SlashCommandBuilder()
+    .setName("addcoins")
+    .setDescription("Owner-only: award Olympus Coins to a member.")
+    .addUserOption(o =>
+      o.setName("member")
+        .setDescription("Member receiving coins")
+        .setRequired(true))
+    .addIntegerOption(o =>
+      o.setName("amount")
+        .setDescription("Number of coins to award")
+        .setMinValue(1)
+        .setMaxValue(100000)
+        .setRequired(true))
+    .addStringOption(o =>
+      o.setName("reason")
+        .setDescription("Reason for the award")
+        .setMaxLength(150)
+        .setRequired(true)),
 ].map(c => c.toJSON());
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -398,6 +416,7 @@ client.once("ready", async () => {
     console.log("Olympus Legacy slash commands registered.");
   } catch (err) { console.error("Slash command registration failed:", err); }
 });
+
 client.on("interactionCreate", async i => {
   if (!i.isChatInputCommand()) return;
   try {
@@ -448,6 +467,36 @@ client.on("interactionCreate", async i => {
       const m = member(i.user.id);
       const list = m.achievements.length ? m.achievements.map(a => `🏅 ${a}`).join("\n") : "No achievements unlocked yet. Your legacy starts with your first party!";
       return i.reply({ embeds: [new EmbedBuilder().setColor(0xC9A646).setTitle("🏺 YOUR ACHIEVEMENTS").setDescription(list)], ephemeral: true });
+    }
+    if (i.commandName === "addcoins") {
+  if (i.user.id !== "1549252381458436189") {
+    return i.reply({
+      content: "⛔ Only the Owner of The Outcasts can use this command.",
+      ephemeral: true
+    });
+  }
+
+  const u = i.options.getUser("member");
+  const amount = i.options.getInteger("amount");
+  const reason = i.options.getString("reason");
+
+  logTransaction(
+    u.id,
+    amount,
+    0,
+    `Owner coin award: ${reason}`,
+    i.user.id
+  );
+
+  return i.reply({
+    content:
+      `🏛️ **OLYMPUS TREASURY AWARD**\n\n` +
+      `Member: <@${u.id}>\n` +
+      `Coins awarded: **${amount.toLocaleString()}**\n` +
+      `Reason: ${reason}\n\n` +
+      `Awarded by: <@${i.user.id}>`,
+    ephemeral: true
+  });
     }
     if (i.commandName === "coins-add" || i.commandName === "coins-remove") {
       const u = i.options.getUser("member"), c = i.options.getInteger("coins"), r = i.options.getInteger("reputation"), reason = i.options.getString("reason");
