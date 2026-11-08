@@ -151,7 +151,7 @@ function awardAchievementRewards(userId, achievementNames) {
 }
 const ACHIEVEMENT_CHANNEL_ID = "1568652450917916794";
 const HALL_OF_LEGENDS_CHANNEL_ID = "1568652450917916794";
-const OUTCAST_OF_MONTH_ROLE_ID = process.env.OUTCAST_OF_MONTH_ROLE_ID || "";
+const OUTCAST_OF_MONTH_ROLE_ID = "1568830099128713337";
 const OUTCAST_OF_MONTH_DURATION_DAYS = 30;
 
 function leaderboardLines(entries, valueFn) {
