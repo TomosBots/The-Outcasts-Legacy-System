@@ -151,6 +151,7 @@ function awardAchievementRewards(userId, achievementNames) {
 }
 const ACHIEVEMENT_CHANNEL_ID = "1568652450917916794";
 const HALL_OF_LEGENDS_CHANNEL_ID = "1568652450917916794";
+const OUTCAST_OF_MONTH_ANNOUNCEMENT_CHANNEL_ID = "1568830679993688234";
 const OUTCAST_OF_MONTH_ROLE_ID = "1568830099128713337";
 const OUTCAST_OF_MONTH_DURATION_DAYS = 30;
 
@@ -682,7 +683,12 @@ client.on("interactionCreate", async i => {
         .setDescription(`Congratulations <@${winnerUser.id}>! You have been crowned **Outcast of the Month — ${monthLabel}**.\n\n${reason}\n\nYour special recognition role will remain for **${OUTCAST_OF_MONTH_DURATION_DAYS} days**. Your name has been added to the Hall of Legends!`)
         .setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY | Kindness. Loyalty. Community." })
         .setTimestamp();
-      await i.channel.send({ embeds: [announcement] }).catch(err => console.error("Could not announce Outcast of the Month:", err.message));
+      const announcementChannel = await client.channels.fetch(OUTCAST_OF_MONTH_ANNOUNCEMENT_CHANNEL_ID).catch(() => null);
+      if (announcementChannel && announcementChannel.isTextBased() && announcementChannel.send) {
+        await announcementChannel.send({ embeds: [announcement] }).catch(err => console.error("Could not announce Outcast of the Month:", err.message));
+      } else {
+        console.error(`[Outcast of the Month] Announcement channel ${OUTCAST_OF_MONTH_ANNOUNCEMENT_CHANNEL_ID} is unavailable or not text-based.`);
+      }
       return i.editReply(`🏆 <@${winnerUser.id}> has been crowned **Outcast of the Month — ${monthLabel}**. The temporary role has been assigned for ${OUTCAST_OF_MONTH_DURATION_DAYS} days and the Hall of Legends has been updated.`);
     }
     if (i.commandName === "outcast-of-month-history") {
