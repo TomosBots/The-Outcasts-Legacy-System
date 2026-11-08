@@ -35,10 +35,10 @@ function loadDB() {
       rewards: parsed.rewards || [],
       transactions: parsed.transactions || [],
       purchases: parsed.purchases || [],
-      systemMessages: parsed.systemMessages || {}
+      elite500AwardCompleted: parsed.elite500AwardCompleted === true
     };
   } catch {
-    return { members: {}, events: {}, rewards: [], transactions: [], purchases: [], systemMessages: {} };
+    return { members: {}, events: {}, rewards: [], transactions: [], purchases: [], elite500AwardCompleted: false };
   }
 }
 const db = loadDB();
@@ -48,11 +48,7 @@ function saveDB() {
   fs.renameSync(tmp, DB_FILE);
 }
 function member(id) {
-  if (!db.members[id]) db.members[id] = { coins: 0, reputation: 0, achievements: [], badges: [], attended: 0, highestRankIndex: 0, lifetimeCoinsEarned: 0 };
-  // Add the collection to existing member records without resetting their progress.
-  if (!Array.isArray(db.members[id].badges)) db.members[id].badges = [];
-  if (!Array.isArray(db.members[id].achievements)) db.members[id].achievements = [];
-  if (!Array.isArray(db.members[id].achievementRewardsClaimed)) db.members[id].achievementRewardsClaimed = [];
+  if (!db.members[id]) db.members[id] = { coins: 0, reputation: 0, achievements: [], attended: 0, highestRankIndex: 0, lifetimeCoinsEarned: 0 };
   return db.members[id];
 }
 const RANKS = [
@@ -110,165 +106,7 @@ function updateAchievements(m) {
   }
   return newlyUnlocked;
 }
-// One-time coin bonuses for newly unlocked achievements.
-// These bonuses increase the spendable balance but do not count toward
-// lifetimeCoinsEarned, preventing reward bonuses from inflating coin milestones.
-const ACHIEVEMENT_REWARDS = {
-  "First Steps": 50,
-  "Loyal Soul": 100,
-  "Devoted Member": 200,
-  "Olympian": 400,
-  "Legendary": 750,
-  "Eternal Legend": 1500,
-  "Wealth of Olympus": 250,
-  "Treasury Keeper": 750
-};
-function awardAchievementRewards(userId, achievementNames) {
-  if (!achievementNames || !achievementNames.length) return [];
-  const m = member(userId);
-  const awarded = [];
-  for (const name of achievementNames) {
-    const amount = ACHIEVEMENT_REWARDS[name] || 0;
-    if (!amount || m.achievementRewardsClaimed.includes(name)) continue;
-    m.achievementRewardsClaimed.push(name);
-    m.coins += amount;
-    db.transactions.unshift({
-      userId,
-      coins: amount,
-      reputation: 0,
-      reason: `Achievement reward: ${name}`,
-      actorId: "OLYMPUS_LEGACY_SYSTEM",
-      at: new Date().toISOString()
-    });
-    awarded.push({ name, amount });
-  }
-  if (awarded.length) {
-    db.transactions = db.transactions.slice(0, 5000);
-    saveDB();
-  }
-  return awarded;
-}
 const ACHIEVEMENT_CHANNEL_ID = "1568652450917916794";
-const HALL_OF_LEGENDS_CHANNEL_ID = "1568652450917916794";
-
-function leaderboardLines(entries, valueFn) {
-  if (!entries.length) return "No Legacy records yet.";
-  const medals = ["🥇", "🥈", "🥉"];
-  return entries.map(([id, data], index) =>
-    `${medals[index] || `**${index + 1}.**`} <@${id}> — **${valueFn(data).toLocaleString()}**`
-  ).join("\n");
-}
-
-const HALL_OF_FAME_TEST_ACCOUNT_IDS = new Set([
-  "1549252381458436189", // Ares - owner's test account
-  "234045604970496001"   // Tomo BLD - test alt account
-]);
-
-function getHallRankings() {
-  const entries = Object.entries(db.members);
-  return {
-    reputation: [...entries].sort((a, b) => (b[1].reputation || 0) - (a[1].reputation || 0)).slice(0, 10),
-    attendance: [...entries].sort((a, b) => (b[1].attended || 0) - (a[1].attended || 0)).slice(0, 10),
-    lifetimeCoins: [...entries].sort((a, b) => (b[1].lifetimeCoinsEarned || 0) - (a[1].lifetimeCoinsEarned || 0)).slice(0, 10),
-    currentTreasury: [...entries].sort((a, b) => (b[1].coins || 0) - (a[1].coins || 0)).slice(0, 10)
-  };
-}
-
-function hallOfLegendsEmbed() {
-  const rankings = getHallRankings();
-  return new EmbedBuilder()
-    .setColor(0xC9A646)
-    .setTitle("🏛️ THE OUTCASTS | HALL OF LEGENDS")
-    .setDescription("The members whose dedication, loyalty and achievements are shaping Olympus. Rankings update automatically as Legacy progress is recorded.")
-    .addFields(
-      { name: "⚔️ Top Reputation", value: leaderboardLines(rankings.reputation, m => m.reputation || 0), inline: false },
-      { name: "🎉 Most Parties Attended", value: leaderboardLines(rankings.attendance, m => m.attended || 0), inline: false },
-      { name: "💰 Lifetime Coins Earned", value: leaderboardLines(rankings.lifetimeCoins, m => m.lifetimeCoinsEarned || 0), inline: false },
-      { name: "🏦 Current Olympus Treasury", value: leaderboardLines(rankings.currentTreasury, m => m.coins || 0), inline: false }
-    )
-    .setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY | Honour is earned." })
-    .setTimestamp();
-}
-
-async function announceHallOfFameEntries(channel, rankings) {
-  const categories = [
-    ["reputation", "⚔️ Top Reputation"],
-    ["attendance", "🎉 Most Parties Attended"],
-    ["lifetimeCoins", "💰 Lifetime Coins Earned"],
-    ["currentTreasury", "🏦 Current Olympus Treasury"]
-  ];
-  const current = Object.fromEntries(categories.map(([key]) => [key, rankings[key].map(([id]) => id)]));
-  const previous = db.systemMessages.hallOfFameEntries;
-
-  // First run establishes a baseline, avoiding a burst of announcements for
-  // members who were already on the leaderboard before this feature existed.
-  if (!previous || typeof previous !== "object") {
-    db.systemMessages.hallOfFameEntries = current;
-    saveDB();
-    return;
-  }
-
-  const announcements = [];
-  for (const [key, label] of categories) {
-    const oldIds = Array.isArray(previous[key]) ? previous[key] : [];
-    rankings[key].forEach(([userId], index) => {
-      if (!oldIds.includes(userId) && !HALL_OF_FAME_TEST_ACCOUNT_IDS.has(userId)) {
-        announcements.push({ userId, label, position: index + 1 });
-      }
-    });
-  }
-
-  // Persist the new positions before sending so refreshes/restarts cannot
-  // repeatedly announce the same Top 10 entry.
-  db.systemMessages.hallOfFameEntries = current;
-  saveDB();
-
-  for (const entry of announcements) {
-    const ordinal = entry.position === 1 ? "1st" : entry.position === 2 ? "2nd" : entry.position === 3 ? "3rd" : `${entry.position}th`;
-    const embed = new EmbedBuilder()
-      .setColor(0xC9A646)
-      .setTitle("🏆 A NEW LEGEND HAS ENTERED THE HALL OF FAME!")
-      .setDescription(`Congratulations <@${entry.userId}>!
-
-You've entered the **Top 10 ${entry.label}** leaderboard at **${ordinal} place**. Your dedication is being recognised throughout Olympus!`)
-      .setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY | Honour is earned." })
-      .setTimestamp();
-    await channel.send({ embeds: [embed] }).catch(err => {
-      console.error(`[Olympus Legacy] Could not announce Hall of Fame entry for ${entry.userId}:`, err.message);
-    });
-  }
-}
-
-async function updateHallOfLegends() {
-  try {
-    const channel = await client.channels.fetch(HALL_OF_LEGENDS_CHANNEL_ID);
-    if (!channel || !channel.isTextBased() || !channel.messages) {
-      console.error(`[Olympus Legacy] Hall of Legends channel ${HALL_OF_LEGENDS_CHANNEL_ID} is unavailable or not text-based.`);
-      return;
-    }
-    const rankings = getHallRankings();
-    const embed = hallOfLegendsEmbed();
-    const savedMessageId = db.systemMessages.hallOfLegends;
-    if (savedMessageId) {
-      try {
-        const message = await channel.messages.fetch(savedMessageId);
-        await message.edit({ embeds: [embed] });
-      } catch (err) {
-        console.warn("[Olympus Legacy] Saved Hall of Legends message was not found; creating a replacement.");
-        const message = await channel.send({ embeds: [embed] });
-        db.systemMessages.hallOfLegends = message.id;
-        saveDB();
-      }
-    } else {
-      const message = await channel.send({ embeds: [embed] });
-      db.systemMessages.hallOfLegends = message.id;
-      saveDB();
-    }
-    await announceHallOfFameEntries(channel, rankings);
-  } catch (err) {
-    console.error("[Olympus Legacy] Could not update Hall of Legends:", err.message);
-  }
-}
 async function announceAchievements(userId, achievementNames) {
   if (!achievementNames || !achievementNames.length) return;
   try {
@@ -294,9 +132,7 @@ async function announceAchievements(userId, achievementNames) {
       .setDescription(`Congratulations <@${userId}>!
 
 You've unlocked **${name}**.
-${descriptions[name] || "A new achievement has been added to your Olympus Legacy."}
-
-🎁 **Achievement reward:** ${ACHIEVEMENT_REWARDS[name] || 0} Olympus Coins` )
+${descriptions[name] || "A new achievement has been added to your Olympus Legacy."}`)
       .setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY | Recognition earned, never purchased." })
       .setTimestamp());
     for (const embed of embeds) await channel.send({ embeds: [embed] });
@@ -310,10 +146,7 @@ function logTransaction(userId, coins, reputation, reason, actorId) {
   m.reputation = Math.max(0, m.reputation + reputation);
   if (coins > 0) m.lifetimeCoinsEarned = (m.lifetimeCoinsEarned || 0) + coins;
   const newlyUnlocked = updateAchievements(m);
-  if (newlyUnlocked.length) {
-    awardAchievementRewards(userId, newlyUnlocked);
-    void announceAchievements(userId, newlyUnlocked);
-  }
+  if (newlyUnlocked.length) void announceAchievements(userId, newlyUnlocked);
   db.transactions.unshift({ userId, coins, reputation, reason, actorId, at: new Date().toISOString() });
   db.transactions = db.transactions.slice(0, 5000);
   saveDB();
@@ -347,15 +180,11 @@ const server = http.createServer((req, res) => {
         const m = member(String(attendee.userId));
         m.attended += 1;
         const newlyUnlocked = updateAchievements(m);
-        if (newlyUnlocked.length) {
-          awardAchievementRewards(String(attendee.userId), newlyUnlocked);
-          await announceAchievements(String(attendee.userId), newlyUnlocked);
-        }
+        await announceAchievements(String(attendee.userId), newlyUnlocked);
         await syncRankRole(guildId, String(attendee.userId));
       }
       db.events[eventId] = { eventName, eventType, guildId, confirmedBy, awarded: unique.length, rewards: amount, at: new Date().toISOString() };
       saveDB();
-      await updateHallOfLegends();
       return json(res, 200, { ok: true, awarded: unique.length, ...amount });
     } catch (err) {
       console.error("Attendance API error:", err);
@@ -533,8 +362,6 @@ async function completeShopPurchase(interaction, item) {
 
 const commands = [
   new SlashCommandBuilder().setName("balance").setDescription("Check your Olympus Coins."),
-  new SlashCommandBuilder().setName("profile").setDescription("View an Olympus Legacy member profile.")
-    .addUserOption(o => o.setName("member").setDescription("Member whose profile you want to view").setRequired(false)),
   new SlashCommandBuilder().setName("reputation").setDescription("View your Olympus rank and reputation.")
     .addUserOption(o => o.setName("member").setDescription("Member to view").setRequired(false)),
   new SlashCommandBuilder().setName("shop").setDescription("Browse Olympus Legacy rewards."),
@@ -558,51 +385,9 @@ const commands = [
     .addIntegerOption(o => o.setName("coins").setDescription("Coins to remove").setMinValue(0).setMaxValue(100000).setRequired(true))
     .addIntegerOption(o => o.setName("reputation").setDescription("Reputation to remove").setMinValue(0).setMaxValue(100000).setRequired(true))
     .addStringOption(o => o.setName("reason").setDescription("Reason for the adjustment").setMaxLength(150).setRequired(true)),
-  new SlashCommandBuilder().setName("remove-parties").setDescription("Remove parties attended from a member's Legacy record.")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addUserOption(o => o.setName("member").setDescription("Member whose attendance to adjust").setRequired(true))
-    .addIntegerOption(o => o.setName("amount").setDescription("Number of parties to remove").setMinValue(1).setMaxValue(1000).setRequired(true))
-    .addStringOption(o => o.setName("reason").setDescription("Reason for the adjustment").setMaxLength(150).setRequired(true)),
-  new SlashCommandBuilder().setName("add-parties").setDescription("Add recorded parties attended to a member.")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addUserOption(o => o.setName("member").setDescription("Member whose attendance to adjust").setRequired(true))
-    .addIntegerOption(o => o.setName("amount").setDescription("Number of parties to add").setMinValue(1).setMaxValue(1000).setRequired(true))
-    .addStringOption(o => o.setName("reason").setDescription("Reason for the adjustment").setMaxLength(150).setRequired(true)),
-  new SlashCommandBuilder().setName("add-badge").setDescription("Add a collectible badge to a member's profile.")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addUserOption(o => o.setName("member").setDescription("Member receiving the badge").setRequired(true))
-    .addStringOption(o => o.setName("badge").setDescription("Badge name").setMaxLength(80).setRequired(true)),
-  new SlashCommandBuilder().setName("remove-badge").setDescription("Remove a collectible badge from a member's profile.")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addUserOption(o => o.setName("member").setDescription("Member losing the badge").setRequired(true))
-    .addStringOption(o => o.setName("badge").setDescription("Exact badge name to remove").setMaxLength(80).setRequired(true)),
-  new SlashCommandBuilder().setName("add-achievement").setDescription("Manually award an Olympus Legacy achievement.")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addUserOption(o => o.setName("member").setDescription("Member receiving the achievement").setRequired(true))
-    .addStringOption(o => o.setName("achievement").setDescription("Achievement to award").setRequired(true).addChoices(
-      { name: "First Steps", value: "First Steps" },
-      { name: "Loyal Soul", value: "Loyal Soul" },
-      { name: "Devoted Member", value: "Devoted Member" },
-      { name: "Olympian", value: "Olympian" },
-      { name: "Legendary", value: "Legendary" },
-      { name: "Eternal Legend", value: "Eternal Legend" },
-      { name: "Wealth of Olympus", value: "Wealth of Olympus" },
-      { name: "Treasury Keeper", value: "Treasury Keeper" }
-    )),
-  new SlashCommandBuilder().setName("remove-achievement").setDescription("Remove an achievement from a member's profile.")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addUserOption(o => o.setName("member").setDescription("Member losing the achievement").setRequired(true))
-    .addStringOption(o => o.setName("achievement").setDescription("Achievement to remove").setRequired(true).addChoices(
-      { name: "First Steps", value: "First Steps" },
-      { name: "Loyal Soul", value: "Loyal Soul" },
-      { name: "Devoted Member", value: "Devoted Member" },
-      { name: "Olympian", value: "Olympian" },
-      { name: "Legendary", value: "Legendary" },
-      { name: "Eternal Legend", value: "Eternal Legend" },
-      { name: "Wealth of Olympus", value: "Wealth of Olympus" },
-      { name: "Treasury Keeper", value: "Treasury Keeper" }
-    )),
   new SlashCommandBuilder().setName("legacy-stats").setDescription("View Olympus Legacy system statistics.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder().setName("award-elite-500").setDescription("One-time: award The Elite 500 role to all current human members.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
     new SlashCommandBuilder()
     .setName("addcoins")
@@ -624,7 +409,7 @@ const commands = [
         .setRequired(true)),
 ].map(c => c.toJSON());
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 client.once("ready", async () => {
   console.log(`🏛️ Olympus Legacy online as ${client.user.tag}`);
   server.listen(PORT, "0.0.0.0", () => console.log(`Olympus Legacy API listening on ${PORT}`));
@@ -633,7 +418,6 @@ client.once("ready", async () => {
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
     console.log("Olympus Legacy slash commands registered.");
   } catch (err) { console.error("Slash command registration failed:", err); }
-  await updateHallOfLegends();
 });
 
 client.on("interactionCreate", async i => {
@@ -642,28 +426,6 @@ client.on("interactionCreate", async i => {
     if (i.commandName === "balance") {
       const m = member(i.user.id);
       return i.reply({ embeds: [new EmbedBuilder().setColor(0xC9A646).setTitle("🏛️ YOUR OLYMPUS TREASURY").setDescription(`💰 **Olympus Coins:** ${m.coins.toLocaleString()}\n⭐ **Reputation:** ${m.reputation.toLocaleString()}\n⚔️ **Rank:** ${rank(m.reputation)}`).setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY" })], ephemeral: true });
-    }
-    if (i.commandName === "profile") {
-      const u = i.options.getUser("member") || i.user;
-      const m = member(u.id);
-      const badges = m.badges.length
-        ? m.badges.map(b => b === "Exclusive Profile Badge" ? "🏅 **Exclusive Badge**" : `🏅 **${b}**`).join("  •  ")
-        : "No collectible badges yet. Visit the Olympus Shop to earn your first one!";
-      const achievements = m.achievements.length
-        ? m.achievements.map(a => `🏆 ${a}`).join("\n")
-        : "No achievements unlocked yet.";
-      const nextRank = m.reputation < 250 ? 250 : m.reputation < 750 ? 750 : m.reputation < 1500 ? 1500 : m.reputation < 3000 ? 3000 : m.reputation < 5000 ? 5000 : "Maximum rank";
-      const embed = new EmbedBuilder()
-        .setColor(0xC9A646)
-        .setTitle(`🏛️ ${u.username.toUpperCase()}'S OLYMPUS LEGACY`)
-        .setThumbnail(u.displayAvatarURL())
-        .setDescription(`**Rank:** ${rank(m.reputation)}\n**Reputation:** ${m.reputation.toLocaleString()}\n**Olympus Coins:** ${m.coins.toLocaleString()}\n**Parties attended:** ${m.attended}\n**Next rank:** ${nextRank}`)
-        .addFields(
-          { name: "🏅 Collectible Badges", value: badges },
-          { name: "🏆 Achievements", value: achievements }
-        )
-        .setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY" });
-      return i.reply({ embeds: [embed], ephemeral: true });
     }
     if (i.commandName === "reputation") {
       const u = i.options.getUser("member") || i.user, m = member(u.id);
@@ -692,29 +454,17 @@ client.on("interactionCreate", async i => {
       const purchase = db.purchases.find(p => p.id === id);
       if (!purchase) return i.reply({ content: "Purchase reference not found.", ephemeral: true });
       if (purchase.status === "fulfilled") return i.reply({ content: `Purchase ${id} is already marked as fulfilled.`, ephemeral: true });
-      // Collectible profile badges are delivered directly into the member's
-      // permanent Legacy collection when staff fulfil the purchase.
-      let deliveryMessage = "";
-      if (purchase.itemId === "profile_badge") {
-        const buyer = member(purchase.userId);
-        const badgeName = "Exclusive Profile Badge";
-        if (!buyer.badges.includes(badgeName)) {
-          buyer.badges.push(badgeName);
-          deliveryMessage = `\n🏅 **${badgeName}** has been added to <@${purchase.userId}>'s Legacy profile.`;
-        } else {
-          deliveryMessage = `\nℹ️ <@${purchase.userId}> already owns this collectible badge; no duplicate was added.`;
-        }
-      }
       purchase.status = "fulfilled";
       purchase.fulfilledAt = new Date().toISOString();
       purchase.fulfilledBy = i.user.id;
       purchase.fulfilmentNote = note;
       saveDB();
-      return i.reply({ content: `✅ Purchase \`${id}\` for <@${purchase.userId}> has been marked as fulfilled.${deliveryMessage}\nNote: ${note}`, ephemeral: true });
+      return i.reply({ content: `✅ Purchase \`${id}\` for <@${purchase.userId}> has been marked as fulfilled.\nNote: ${note}`, ephemeral: true });
     }
     if (i.commandName === "leaderboard") {
-      await updateHallOfLegends();
-      return i.reply({ content: `🏛️ The Hall of Legends is displayed and updated in <#${HALL_OF_LEGENDS_CHANNEL_ID}>.`, ephemeral: true });
+      const top = Object.entries(db.members).sort((a,b) => b[1].reputation - a[1].reputation).slice(0,10);
+      const desc = top.length ? top.map(([id,m],n) => `**${n+1}.** <@${id}> — ${m.reputation} reputation • ${m.coins} coins`).join("\n") : "No legacy records yet. Attend a party to begin your journey!";
+      return i.reply({ embeds: [new EmbedBuilder().setColor(0xC9A646).setTitle("🏆 HALL OF LEGENDS").setDescription(desc).setFooter({ text: "Ranked by reputation" })] });
     }
     if (i.commandName === "achievements") {
       const m = member(i.user.id);
@@ -740,7 +490,6 @@ client.on("interactionCreate", async i => {
     `Owner coin award: ${reason}`,
     i.user.id
   );
-  await updateHallOfLegends();
 
   return i.reply({
     content:
@@ -757,134 +506,52 @@ client.on("interactionCreate", async i => {
       const sign = i.commandName === "coins-add" ? 1 : -1;
       logTransaction(u.id, c*sign, r*sign, reason, i.user.id);
       await syncRankRole(i.guildId || GUILD_ID, u.id);
-      await updateHallOfLegends();
       return i.reply({ content: `🏛️ Updated <@${u.id}>: ${c*sign} coins and ${r*sign} reputation. Reason: ${reason}`, ephemeral: true });
     }
-    if (i.commandName === "remove-parties") {
-      const u = i.options.getUser("member");
-      const amount = i.options.getInteger("amount");
-      const reason = i.options.getString("reason");
-      const m = member(u.id);
-
-      if (amount > m.attended) {
-        return i.reply({
-          content: `⛔ <@${u.id}> only has **${m.attended}** recorded parties attended. You cannot remove ${amount}.`,
-          ephemeral: true
-        });
+    if (i.commandName === "award-elite-500") {
+      if (i.user.id !== "1549252381458436189") {
+        return i.reply({ content: "⛔ Only the server owner can run this one-time recognition command.", ephemeral: true });
       }
-
-      m.attended -= amount;
-      db.transactions.unshift({
-        userId: u.id,
-        coins: 0,
-        reputation: 0,
-        reason: `Attendance adjustment: -${amount} parties. ${reason}`,
-        actorId: i.user.id,
-        at: new Date().toISOString()
-      });
-      db.transactions = db.transactions.slice(0, 5000);
-      saveDB();
-      await updateHallOfLegends();
-
-      return i.reply({
-        content:
-          `🏛️ **OLYMPUS LEGACY | ATTENDANCE ADJUSTED**\\n\\n` +
-          `Member: <@${u.id}>\\n` +
-          `Parties removed: **${amount}**\\n` +
-          `New recorded attendance: **${m.attended}**\\n` +
-          `Reason: ${reason}\\n\\n` +
-          `Adjusted by: <@${i.user.id}>`,
-        ephemeral: true
-      });
-    }
-    if (i.commandName === "add-parties") {
-      const u = i.options.getUser("member");
-      const amount = i.options.getInteger("amount");
-      const reason = i.options.getString("reason");
-      const m = member(u.id);
-      m.attended += amount;
-
-      const newlyUnlocked = updateAchievements(m);
-      if (newlyUnlocked.length) {
-        awardAchievementRewards(u.id, newlyUnlocked);
-        await announceAchievements(u.id, newlyUnlocked);
+      if (db.elite500AwardCompleted) {
+        return i.reply({ content: "🏛️ The Elite 500 award has already been completed. Future members are not included.", ephemeral: true });
       }
-
-      db.transactions.unshift({
-        userId: u.id, coins: 0, reputation: 0,
-        reason: `Attendance adjustment: +${amount} parties. ${reason}`,
-        actorId: i.user.id, at: new Date().toISOString()
-      });
-      db.transactions = db.transactions.slice(0, 5000);
-      saveDB();
-      await updateHallOfLegends();
-
-      return i.reply({
-        content: `🏛️ **ATTENDANCE UPDATED**\\n\\nMember: <@${u.id}>\\nParties added: **${amount}**\\nNew recorded attendance: **${m.attended}**\\nReason: ${reason}`,
-        ephemeral: true
-      });
-    }
-
-    if (i.commandName === "add-badge" || i.commandName === "remove-badge") {
-      const u = i.options.getUser("member");
-      const badge = i.options.getString("badge").trim();
-      const m = member(u.id);
-
-      if (i.commandName === "add-badge") {
-        if (m.badges.includes(badge)) {
-          return i.reply({ content: `<@${u.id}> already has the badge **${badge}**.`, ephemeral: true });
-        }
-        m.badges.push(badge);
-      } else {
-        const index = m.badges.indexOf(badge);
-        if (index === -1) {
-          return i.reply({ content: `<@${u.id}> does not have the badge **${badge}**. Badge names must match exactly.`, ephemeral: true });
-        }
-        m.badges.splice(index, 1);
+      await i.deferReply({ ephemeral: true });
+      const guild = await client.guilds.fetch(GUILD_ID);
+      const roleId = "1568807312724983899";
+      const role = await guild.roles.fetch(roleId);
+      if (!role) {
+        return i.editReply("❌ I couldn't find the role **The Elite 500**. Please check the role ID.");
       }
-
-      saveDB();
-      const action = i.commandName === "add-badge" ? "added to" : "removed from";
-      return i.reply({
-        content: `🏅 Badge **${badge}** has been ${action} <@${u.id}>'s profile.`,
-        ephemeral: true
-      });
-    }
-
-    if (i.commandName === "add-achievement" || i.commandName === "remove-achievement") {
-      const u = i.options.getUser("member");
-      const achievement = i.options.getString("achievement");
-      const m = member(u.id);
-
-      if (i.commandName === "add-achievement") {
-        if (m.achievements.includes(achievement)) {
-          return i.reply({ content: `<@${u.id}> already has **${achievement}**.`, ephemeral: true });
+      const me = await guild.members.fetchMe();
+      if (!me.permissions.has(PermissionFlagsBits.ManageRoles) || me.roles.highest.comparePositionTo(role) <= 0) {
+        return i.editReply("❌ I need **Manage Roles**, and my highest role must be above **The Elite 500** in the server role list.");
+      }
+      const members = await guild.members.fetch();
+      let awarded = 0, alreadyHad = 0, botsSkipped = 0, failed = 0;
+      for (const [id, guildMember] of members) {
+        if (guildMember.user.bot) { botsSkipped++; continue; }
+        if (guildMember.roles.cache.has(roleId)) { alreadyHad++; continue; }
+        try {
+          await guildMember.roles.add(role, "One-time founding community recognition: The Elite 500");
+          awarded++;
+        } catch (err) {
+          failed++;
+          console.error(`[Elite 500] Could not award role to ${id}:`, err.message);
         }
-        m.achievements.push(achievement);
-        const awarded = awardAchievementRewards(u.id, [achievement]);
+      }
+      if (failed === 0) {
+        db.elite500AwardCompleted = true;
         saveDB();
-        await announceAchievements(u.id, [achievement]);
-        const bonus = awarded.reduce((sum, item) => sum + item.amount, 0);
-        return i.reply({
-          content: `🏆 **${achievement}** has been awarded to <@${u.id}>.${bonus ? `\\n🎁 Achievement bonus: **${bonus.toLocaleString()} Olympus Coins**.` : ""}`,
-          ephemeral: true
-        });
       }
-
-      const index = m.achievements.indexOf(achievement);
-      if (index === -1) {
-        return i.reply({ content: `<@${u.id}> does not have **${achievement}**.`, ephemeral: true });
-      }
-      m.achievements.splice(index, 1);
-      // Keep reward history intact: removing an achievement does not claw back
-      // coins already awarded or automatically pay the reward again later.
-      saveDB();
-      return i.reply({
-        content: `🏆 **${achievement}** has been removed from <@${u.id}>'s profile. Any coins previously awarded for it remain in their balance.`,
-        ephemeral: true
-      });
+      return i.editReply(
+        `🏛️ **THE ELITE 500 — ROLE AWARD ${failed === 0 ? "COMPLETE" : "PARTIALLY COMPLETE"}**\n\n` +
+        `✅ Newly awarded: **${awarded}**\n` +
+        `Already had the role: **${alreadyHad}**\n` +
+        `Bots skipped: **${botsSkipped}**\n` +
+        `Failed: **${failed}**\n\n` +
+        (failed === 0 ? "This one-time award is now locked. Future members will not be included." : "The run was not locked because some assignments failed. Fix the permissions and run the command again; members who already have the role will be skipped.")
+      );
     }
-
     if (i.commandName === "legacy-stats") {
       const totalCoins = Object.values(db.members).reduce((n,m)=>n+m.coins,0);
       const totalRep = Object.values(db.members).reduce((n,m)=>n+m.reputation,0);
