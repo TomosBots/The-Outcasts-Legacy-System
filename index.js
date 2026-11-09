@@ -177,7 +177,7 @@ async function leaderboardLines(entries, valueFn) {
     const name = await discordMemberName(id);
     return `${medals[index] || `**${index + 1}.**`} **${name}** — **${Number(valueFn(data) || 0).toLocaleString()}**`;
   }));
-  return rows.join("\\n");
+  return rows.join("\n");
 }
 
 async function hallOfLegendsEmbed() {
@@ -187,8 +187,8 @@ async function hallOfLegendsEmbed() {
   const lifetimeCoins = [...entries].sort((a, b) => (b[1].lifetimeCoinsEarned || 0) - (a[1].lifetimeCoinsEarned || 0)).slice(0, 10);
   const winners = db.outcastOfMonth && db.outcastOfMonth.length
     ? (await Promise.all(db.outcastOfMonth.slice(-5).reverse().map(async w =>
-        `🏅 **${await discordMemberName(w.userId)}** — **${w.monthLabel}**\\n${w.reason}`
-      ))).join("\\n\\n").slice(0, 1024)
+        `🏅 **${await discordMemberName(w.userId)}** — **${w.monthLabel}**\n${w.reason}`
+      ))).join("\n\n").slice(0, 1024)
     : "No Outcast of the Month has been crowned yet. Check back soon!";
   return new EmbedBuilder()
     .setColor(0xC9A646)
