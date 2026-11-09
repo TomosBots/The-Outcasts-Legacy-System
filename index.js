@@ -155,30 +155,50 @@ const OUTCAST_OF_MONTH_ANNOUNCEMENT_CHANNEL_ID = "1568830679993688234";
 const OUTCAST_OF_MONTH_ROLE_ID = "1568830099128713337";
 const OUTCAST_OF_MONTH_DURATION_DAYS = 30;
 
-function leaderboardLines(entries, valueFn) {
-  if (!entries.length) return "No Legacy records yet.";
-  const medals = ["🥇", "🥈", "🥉"];
-  return entries.map(([id, data], index) =>
-    `${medals[index] || `**${index + 1}.**`} <@${id}> — **${valueFn(data).toLocaleString()}**`
-  ).join("\n");
+async function discordMemberName(userId) {
+  try {
+    const guild = await client.guilds.fetch(GUILD_ID);
+    const guildMember = await guild.members.fetch(userId);
+    return guildMember.displayName || guildMember.user.username;
+  } catch {
+    try {
+      const user = await client.users.fetch(userId);
+      return user.globalName || user.username;
+    } catch {
+      return "Unknown member";
+    }
+  }
 }
 
-function hallOfLegendsEmbed() {
+async function leaderboardLines(entries, valueFn) {
+  if (!entries.length) return "No Legacy records yet.";
+  const medals = ["🥇", "🥈", "🥉"];
+  const rows = await Promise.all(entries.map(async ([id, data], index) => {
+    const name = await discordMemberName(id);
+    return `${medals[index] || `**${index + 1}.**`} **${name}** — **${Number(valueFn(data) || 0).toLocaleString()}**`;
+  }));
+  return rows.join("\\n");
+}
+
+async function hallOfLegendsEmbed() {
   const entries = Object.entries(db.members);
   const reputation = [...entries].sort((a, b) => (b[1].reputation || 0) - (a[1].reputation || 0)).slice(0, 10);
   const attendance = [...entries].sort((a, b) => (b[1].attended || 0) - (a[1].attended || 0)).slice(0, 10);
   const lifetimeCoins = [...entries].sort((a, b) => (b[1].lifetimeCoinsEarned || 0) - (a[1].lifetimeCoinsEarned || 0)).slice(0, 10);
+  const winners = db.outcastOfMonth && db.outcastOfMonth.length
+    ? (await Promise.all(db.outcastOfMonth.slice(-5).reverse().map(async w =>
+        `🏅 **${await discordMemberName(w.userId)}** — **${w.monthLabel}**\\n${w.reason}`
+      ))).join("\\n\\n").slice(0, 1024)
+    : "No Outcast of the Month has been crowned yet. Check back soon!";
   return new EmbedBuilder()
     .setColor(0xC9A646)
     .setTitle("🏛️ THE OUTCASTS | HALL OF LEGENDS")
     .setDescription("The members whose dedication, loyalty and achievements are shaping Olympus. Rankings update automatically as Legacy progress is recorded.")
     .addFields(
-      { name: "🏆 OUTCAST OF THE MONTH", value: db.outcastOfMonth && db.outcastOfMonth.length
-          ? db.outcastOfMonth.slice(-5).reverse().map(w => `🏅 <@${w.userId}> — **${w.monthLabel}**\n${w.reason}`).join("\n\n").slice(0, 1024)
-          : "No Outcast of the Month has been crowned yet. Check back soon!", inline: false },
-      { name: "⚔️ Top Reputation", value: leaderboardLines(reputation, m => m.reputation || 0), inline: false },
-      { name: "🎉 Most Parties Attended", value: leaderboardLines(attendance, m => m.attended || 0), inline: false },
-      { name: "💰 Lifetime Coins Earned", value: leaderboardLines(lifetimeCoins, m => m.lifetimeCoinsEarned || 0), inline: false }
+      { name: "🏆 OUTCAST OF THE MONTH", value: winners, inline: false },
+      { name: "⚔️ Top Reputation", value: await leaderboardLines(reputation, m => m.reputation || 0), inline: false },
+      { name: "🎉 Most Parties Attended", value: await leaderboardLines(attendance, m => m.attended || 0), inline: false },
+      { name: "💰 Lifetime Coins Earned", value: await leaderboardLines(lifetimeCoins, m => m.lifetimeCoinsEarned || 0), inline: false }
     )
     .setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY | Honour is earned." })
     .setTimestamp();
@@ -191,7 +211,7 @@ async function updateHallOfLegends() {
       console.error(`[Olympus Legacy] Hall of Legends channel ${HALL_OF_LEGENDS_CHANNEL_ID} is unavailable or not text-based.`);
       return;
     }
-    const embed = hallOfLegendsEmbed();
+    const embed = await hallOfLegendsEmbed();
     const savedMessageId = db.systemMessages.hallOfLegends;
     if (savedMessageId) {
       try {
@@ -507,6 +527,10 @@ const commands = [
   new SlashCommandBuilder().setName("legacy-stats").setDescription("View Olympus Legacy system statistics.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
     new SlashCommandBuilder()
+    .setName("reset-lifetime-coins")
+    .setDescription("Owner-only: reset a member's lifetime Olympus Coins earned to zero.")
+    .addUserOption(o => o.setName("member").setDescription("Member whose lifetime coins should be reset").setRequired(true)),
+    new SlashCommandBuilder()
     .setName("addcoins")
     .setDescription("Owner-only: award Olympus Coins to a member.")
     .addUserOption(o =>
@@ -706,6 +730,21 @@ client.on("interactionCreate", async i => {
       const m = member(i.user.id);
       const list = m.achievements.length ? m.achievements.map(a => `🏅 ${a}`).join("\n") : "No achievements unlocked yet. Your legacy starts with your first party!";
       return i.reply({ embeds: [new EmbedBuilder().setColor(0xC9A646).setTitle("🏺 YOUR ACHIEVEMENTS").setDescription(list)], ephemeral: true });
+    }
+    if (i.commandName === "reset-lifetime-coins") {
+      if (i.user.id !== "1549252381458436189") {
+        return i.reply({ content: "⛔ Only the Owner of The Outcasts can use this command.", ephemeral: true });
+      }
+      const target = i.options.getUser("member", true);
+      const targetMember = member(target.id);
+      const previousTotal = Number(targetMember.lifetimeCoinsEarned || 0);
+      targetMember.lifetimeCoinsEarned = 0;
+      saveDB();
+      await updateHallOfLegends();
+      return i.reply({
+        content: `✅ Reset **${target.globalName || target.username}**'s lifetime Olympus Coins from **${previousTotal.toLocaleString()}** to **0**. Their current spendable coin balance (**${targetMember.coins.toLocaleString()}**) has not changed.`,
+        ephemeral: true
+      });
     }
     if (i.commandName === "addcoins") {
   if (i.user.id !== "1549252381458436189") {
