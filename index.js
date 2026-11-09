@@ -229,15 +229,15 @@ async function updateHallOfLegends() {
     console.error("[Olympus Legacy] Could not update Hall of Legends:", err.message);
   }
 }
-async function announceAchievements(userId, achievementNames) {
-  if (!achievementNames || !achievementNames.length) return;
+async function announceAchievementBatch(entries) {
+  if (!entries || !entries.length) return;
   try {
     const channel = await client.channels.fetch(ACHIEVEMENT_CHANNEL_ID);
     if (!channel || !channel.isTextBased()) {
       console.error(`[Olympus Legacy] Achievement channel ${ACHIEVEMENT_CHANNEL_ID} is unavailable or not text-based.`);
       return;
     }
-    const memberUser = await client.users.fetch(userId);
+
     const descriptions = {
       "First Steps": "You've attended your first party and begun your Olympus journey.",
       "Loyal Soul": "Five parties attended. Your loyalty is becoming known throughout Olympus.",
@@ -248,23 +248,50 @@ async function announceAchievements(userId, achievementNames) {
       "Wealth of Olympus": "You've earned 1,000 Olympus Coins over your journey.",
       "Treasury Keeper": "You've earned 5,000 Olympus Coins over your journey."
     };
-    const embeds = achievementNames.map(name => new EmbedBuilder()
+
+    // Combine duplicate entries for the same member so each person appears once.
+    const grouped = new Map();
+    for (const entry of entries) {
+      if (!entry || !entry.userId || !Array.isArray(entry.achievementNames)) continue;
+      const existing = grouped.get(entry.userId) || new Set();
+      for (const name of entry.achievementNames) existing.add(name);
+      grouped.set(entry.userId, existing);
+    }
+
+    const sections = [];
+    for (const [userId, names] of grouped) {
+      const lines = [...names].map(name =>
+        `• **${name}** — ${descriptions[name] || "A new achievement has been added to your Olympus Legacy."}\n  🎁 Reward: **${(ACHIEVEMENT_REWARDS[name] || 0).toLocaleString()} Olympus Coins**`
+      );
+      sections.push(`🏅 <@${userId}>\n${lines.join("\n")}`);
+    }
+
+    if (!sections.length) return;
+    let description = sections.join("\n\n");
+    if (description.length > 4000) {
+      description = description.slice(0, 3950) + "\n\n…Additional achievements have also been recorded in member profiles.";
+    }
+
+    const embed = new EmbedBuilder()
       .setColor(0xC9A646)
-      .setTitle("🏛️ A NEW LEGEND IS RISING!")
-      .setDescription(`Congratulations <@${userId}>!
-
-You've unlocked **${name}**.
-${descriptions[name] || "A new achievement has been added to your Olympus Legacy."}
-
-🎁 **Achievement reward:** ${ACHIEVEMENT_REWARDS[name] || 0} Olympus Coins` )
+      .setTitle("🏛️ OLYMPUS LEGACY | ACHIEVEMENTS UNLOCKED")
+      .setDescription(description)
       .setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY | Recognition earned, never purchased." })
-      .setTimestamp());
-    for (const embed of embeds) await channel.send({ embeds: [embed] });
+      .setTimestamp();
+
+    // One Discord message for the entire batch.
+    await channel.send({ embeds: [embed] });
   } catch (err) {
-    console.error(`[Olympus Legacy] Could not announce achievement for ${userId}:`, err.message);
+    console.error("[Olympus Legacy] Could not announce achievements:", err.message);
   }
 }
-function logTransaction(userId, coins, reputation, reason, actorId) {
+
+async function announceAchievements(userId, achievementNames) {
+  if (!achievementNames || !achievementNames.length) return;
+  return announceAchievementBatch([{ userId, achievementNames }]);
+}
+
+function logTransaction(userId, coins, reputation, reason, actorId, achievementQueue = null) {
   const m = member(userId);
   m.coins = Math.max(0, m.coins + coins);
   m.reputation = Math.max(0, m.reputation + reputation);
@@ -272,7 +299,8 @@ function logTransaction(userId, coins, reputation, reason, actorId) {
   const newlyUnlocked = updateAchievements(m);
   if (newlyUnlocked.length) {
     awardAchievementRewards(userId, newlyUnlocked);
-    void announceAchievements(userId, newlyUnlocked);
+    if (achievementQueue) achievementQueue.push({ userId, achievementNames: newlyUnlocked });
+    else void announceAchievements(userId, newlyUnlocked);
   }
   db.transactions.unshift({ userId, coins, reputation, reason, actorId, at: new Date().toISOString() });
   db.transactions = db.transactions.slice(0, 5000);
@@ -302,17 +330,21 @@ const server = http.createServer((req, res) => {
       const unique = [...new Map(attendees.filter(a => /^\d{17,20}$/.test(String(a.userId || ""))).map(a => [String(a.userId), a])).values()];
       if (!unique.length) return json(res, 400, { error: "No valid Discord member IDs were supplied." });
       const amount = rewardFor(eventType);
+      const achievementQueue = [];
       for (const attendee of unique) {
-        logTransaction(String(attendee.userId), amount.coins, amount.reputation, `Attendance: ${eventName || eventType}`, confirmedBy);
-        const m = member(String(attendee.userId));
+        const userId = String(attendee.userId);
+        logTransaction(userId, amount.coins, amount.reputation, `Attendance: ${eventName || eventType}`, confirmedBy, achievementQueue);
+        const m = member(userId);
         m.attended += 1;
         const newlyUnlocked = updateAchievements(m);
         if (newlyUnlocked.length) {
-          awardAchievementRewards(String(attendee.userId), newlyUnlocked);
-          await announceAchievements(String(attendee.userId), newlyUnlocked);
+          awardAchievementRewards(userId, newlyUnlocked);
+          achievementQueue.push({ userId, achievementNames: newlyUnlocked });
         }
-        await syncRankRole(guildId, String(attendee.userId));
+        await syncRankRole(guildId, userId);
       }
+      // All achievements unlocked by this attendance confirmation go into one message.
+      if (achievementQueue.length) await announceAchievementBatch(achievementQueue);
       db.events[eventId] = { eventName, eventType, guildId, confirmedBy, awarded: unique.length, rewards: amount, at: new Date().toISOString() };
       saveDB();
       await updateHallOfLegends();
