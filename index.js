@@ -623,14 +623,33 @@ client.once("ready", async () => {
 
 client.on("interactionCreate", async i => {
   if (!i.isChatInputCommand()) return;
+  console.log(`[COMMAND] /${i.commandName} received from ${i.user.tag} (${i.user.id})`);
   try {
     if (i.commandName === "balance") {
       const m = member(i.user.id);
       return i.reply({ embeds: [new EmbedBuilder().setColor(0xC9A646).setTitle("🏛️ YOUR OLYMPUS TREASURY").setDescription(`💰 **Olympus Coins:** ${m.coins.toLocaleString()}\n⭐ **Reputation:** ${m.reputation.toLocaleString()}\n⚔️ **Rank:** ${rank(m.reputation)}`).setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY" })], ephemeral: true });
     }
     if (i.commandName === "profile") {
-      const u = i.options.getUser("member") || i.user;
-      const m = member(u.id);
+      // Log the interaction so Railway confirms whether Discord submitted it.
+      const selectedUser = i.options.getUser("member");
+      const targetUser = selectedUser || i.user;
+      console.log(
+        `[PROFILE] Requested by ${i.user.tag} (${i.user.id}); target ${targetUser.tag} (${targetUser.id}); guild ${i.guildId || "DM"}`
+      );
+
+      // Acknowledge immediately so Discord does not time out while we fetch data.
+      await i.deferReply({ ephemeral: true });
+
+      let targetMember = null;
+      if (i.guild) {
+        targetMember = await i.guild.members.fetch(targetUser.id).catch(err => {
+          console.warn(`[PROFILE] Could not fetch guild member ${targetUser.id}: ${err.message}`);
+          return null;
+        });
+      }
+
+      const m = member(targetUser.id);
+      const displayName = targetMember?.displayName || targetUser.globalName || targetUser.username;
       const badges = m.badges.length
         ? m.badges.map(b => b === "Exclusive Profile Badge" ? "🏅 **Exclusive Badge**" : `🏅 **${b}**`).join("  •  ")
         : "No collectible badges yet. Visit the Olympus Shop to earn your first one!";
@@ -640,15 +659,15 @@ client.on("interactionCreate", async i => {
       const nextRank = m.reputation < 250 ? 250 : m.reputation < 750 ? 750 : m.reputation < 1500 ? 1500 : m.reputation < 3000 ? 3000 : m.reputation < 5000 ? 5000 : "Maximum rank";
       const embed = new EmbedBuilder()
         .setColor(0xC9A646)
-        .setTitle(`🏛️ ${u.username.toUpperCase()}'S OLYMPUS LEGACY`)
-        .setThumbnail(u.displayAvatarURL())
+        .setTitle(`🏛️ ${displayName.toUpperCase()}'S OLYMPUS LEGACY`)
+        .setThumbnail(targetUser.displayAvatarURL())
         .setDescription(`**Rank:** ${rank(m.reputation)}\n**Reputation:** ${m.reputation.toLocaleString()}\n**Olympus Coins:** ${m.coins.toLocaleString()}\n**Parties attended:** ${m.attended}\n**Next rank:** ${nextRank}`)
         .addFields(
           { name: "🏅 Collectible Badges", value: badges },
           { name: "🏆 Achievements", value: achievements }
         )
         .setFooter({ text: "THE OUTCASTS • OLYMPUS LEGACY" });
-      return i.reply({ embeds: [embed], ephemeral: true });
+      return i.editReply({ embeds: [embed] });
     }
     if (i.commandName === "reputation") {
       const u = i.options.getUser("member") || i.user, m = member(u.id);
